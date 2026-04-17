@@ -225,3 +225,58 @@ CREATE POLICY user_own_transactions ON transactions
             )
         )
     );
+
+-- =============================================================================
+-- PGVector — Embeddings Table & Role-Based RLS
+-- =============================================================================
+--
+-- This section supports the LangChain + PGVector RAG pipeline. Unlike the
+-- tables above (which use session-variable RLS via app.current_role), the
+-- embeddings table uses database roles (redbank_admin / redbank_user) for RLS.
+-- The pipeline and notebook connect as these roles directly.
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    langchain_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    collection VARCHAR(64) NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(768) NOT NULL,
+    langchain_metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_collection ON embeddings(collection);
+
+-- Create roles idempotently
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'redbank_admin') THEN
+        CREATE ROLE redbank_admin WITH LOGIN PASSWORD 'admin_pass';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'redbank_user') THEN
+        CREATE ROLE redbank_user WITH LOGIN PASSWORD 'user_pass';
+    END IF;
+END $$;
+
+-- Grants
+GRANT SELECT, INSERT, UPDATE, DELETE ON embeddings TO redbank_admin;
+GRANT SELECT ON embeddings TO redbank_user;
+
+-- Table owner bypasses RLS — used by the pipeline for ingestion
+ALTER TABLE embeddings OWNER TO "$POSTGRESQL_USER";
+
+-- Enable RLS (no FORCE needed — redbank_admin/redbank_user are non-owner roles)
+ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY;
+
+-- Admin: full access to all collections
+CREATE POLICY admin_all_embeddings ON embeddings
+    FOR ALL
+    TO redbank_admin
+    USING (true)
+    WITH CHECK (true);
+
+-- User: read-only, restricted to 'user' collection
+CREATE POLICY user_select_embeddings ON embeddings
+    FOR SELECT
+    TO redbank_user
+    USING (collection = 'user');

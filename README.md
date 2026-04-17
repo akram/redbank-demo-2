@@ -13,6 +13,11 @@ redbank-demo-2/
 │   ├── init-db.sh            Startup init script
 │   ├── postgres.yaml         Secret + Deployment + Service
 │   └── kustomization.yaml
+├── langchain-pgvector/        LangChain + PGVector RAG pipeline
+│   ├── tests/                 Schema + RLS tests (testcontainers)
+│   ├── pipeline/              KFP ingestion pipeline
+│   ├── notebook/              Query notebook (admin vs user RLS demo)
+│   └── requirements.txt
 ├── mcp-server/               FastMCP server with auth-aware tools
 │   ├── redbank-mcp/
 │   │   ├── mcp_server.py     Tool definitions + JWT auth
@@ -117,6 +122,8 @@ When no Bearer token is present, the server falls back to `DEFAULT_ROLE` and `DE
 
 RLS is enabled and forced (`FORCE ROW LEVEL SECURITY`) on `customers`, `statements`, and `transactions`. The table owner (`$POSTGRESQL_USER`) is the same role the MCP server connects as, so `FORCE` ensures policies apply even to the owner.
 
+> **Note:** The `embeddings` table (used by the RAG pipeline) uses a **different RLS approach** — database roles (`redbank_admin`/`redbank_user`) instead of session variables (`app.current_role`). This is because the pipeline and notebook connect as distinct database roles rather than through the MCP server. No `FORCE ROW LEVEL SECURITY` is needed since these roles are not the table owner.
+
 Before each query, the `@authenticated` decorator opens a connection from the pool and sets two session variables inside a transaction:
 
 ```sql
@@ -219,6 +226,85 @@ Agent C is designed to be called by the Orchestrator Agent (Agent A) via A2A. Th
 - **Token propagation**: The orchestrator forwards the user's Bearer JWT in the `Authorization` header. Agent C passes it through to the MCP server, preserving the full identity chain.
 - **Access gating**: With AuthBridge deployed, non-admin users are rejected at the network level (Tier 1) before reaching Agent C. Without AuthBridge, the MCP server's `@admin_only` decorator enforces this at the tool level (Tier 2).
 
+## RAG Pipeline (LangChain + PGVector)
+
+### Overview
+
+A document ingestion pipeline using LangChain + PGVector for retrieval-augmented generation (RAG) with role-scoped access. Admin documents and user documents are ingested into separate collections in the same `embeddings` table, and PostgreSQL RLS ensures each role sees only its authorized documents.
+
+This reuses the **existing PostgreSQL instance** deployed via `postgres-db/`. The pgvector extension, `embeddings` table, and role-based RLS policies are all defined in `postgres-db/init.sql`.
+
+### Embedding Model
+
+Uses `nomic-ai/nomic-embed-text-v1.5` via **sentence-transformers** (`langchain-huggingface`). Produces 768-dimensional vectors and runs locally — no external embedding API endpoint needed.
+
+### Document Source
+
+6 RedBank PDF documents hosted on GitHub, fetched by the pipeline at runtime:
+
+- **Admin** (`admin/`): `redbank_compliance_procedures.pdf`, `redbank_transaction_operations.pdf`, `redbank_user_management.pdf`
+- **User** (`user/`): `redbank_account_selfservice.pdf`, `redbank_password_and_security.pdf`, `redbank_payments_and_transfers.pdf`
+
+### Embeddings Table Schema
+
+Each row represents a single chunk of a source PDF document. PDFs are split into chunks by `RecursiveCharacterTextSplitter`, and each chunk is embedded and stored as one row.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `langchain_id` | `UUID` (PK) | Unique identifier for each chunk |
+| `collection` | `VARCHAR(64)` | `admin` or `user` — determines RLS visibility |
+| `content` | `TEXT` | The text content of the chunk |
+| `embedding` | `vector(768)` | 768-dim embedding from nomic-embed-text-v1.5 |
+| `langchain_metadata` | `JSONB` | Source metadata (page number, source PDF, creator) |
+
+### RLS for Embeddings
+
+Role-based access control on the `embeddings` table:
+
+| Role | Read | Write | Collections visible |
+|------|------|-------|---------------------|
+| `redbank_admin` | All rows | INSERT/UPDATE/DELETE | `admin`, `user` |
+| `redbank_user` | `user` collection only | None | `user` |
+
+The table owner (`$POSTGRESQL_USER`) bypasses RLS and is used by the ingestion pipeline.
+
+### Pipeline
+
+`langchain-pgvector/pipeline/pgvector_rag_pipeline.py` is a KFP pipeline that:
+
+1. Downloads PDFs from GitHub via `base_url` + `filenames`
+2. Loads and chunks documents with `RecursiveCharacterTextSplitter`
+3. Embeds with `HuggingFaceEmbeddings` (nomic-embed-text)
+4. Stores in PGVector via `PGVectorStore` with collection-scoped access
+
+Admin and user document sets are ingested in parallel as separate pipeline tasks.
+
+Compile the pipeline: `make compile-pipeline`
+
+### Query Notebook
+
+`langchain-pgvector/notebook/pgvector_query_notebook.ipynb` demonstrates:
+
+1. Admin similarity search — results from both `admin` and `user` collections
+2. User similarity search — results from `user` collection only
+3. Direct SQL verification that RLS blocks user access to admin rows
+4. Document count per collection
+
+### PostgreSQL Infrastructure
+
+`postgres-db/init.sql` includes the pgvector extension (`CREATE EXTENSION IF NOT EXISTS vector`), `embeddings` table, and role-based RLS policies alongside the existing MCP schema. `postgres-db/postgres.yaml` uses the `quay.io/mcampbel/pgvector:pg16` image (community PostgreSQL with pgvector pre-installed) and includes:
+
+- A **PersistentVolumeClaim** (`postgres-pvc`, 10Gi) mounted at `/var/lib/postgresql/data` for data persistence
+- **`PGDATA`** set to a subdirectory (`/var/lib/postgresql/data/pgdata`) to avoid the `lost+found` conflict on PVC mount points
+
+### Tests
+
+Schema and RLS tests use **testcontainers** with the `pgvector/pgvector:pg16` container image (via Podman):
+
+```bash
+make test-pgvector   # requires Podman
+```
+
 ## Deployment
 
 All operations are driven through the Makefile. The default namespace is `redbank-demo` — override with `NAMESPACE=my-namespace`.
@@ -232,7 +318,9 @@ All operations are driven through the Makefile. The default namespace is `redban
 | `deploy-mcp` | Build MCP server image via `oc new-build` and deploy |
 | `deploy-agent-c` | Build Banking Operations Agent image and deploy |
 | `setup-keycloak` | Provision Keycloak realm, client, audience mapper, roles, and demo users |
-| `clean` | Tear down deployed workloads (deployments, services, secrets, configmaps) |
+| `test-pgvector` | Run pgvector schema + RLS tests (requires Podman) |
+| `compile-pipeline` | Compile the KFP pipeline to YAML |
+| `clean` | Tear down deployed workloads (deployments, services, secrets, configmaps, PVC) |
 
 > **Note:** Tier 1 access gating (non-admin rejection at the network level) requires the Kagenti AuthBridge sidecar, which is injected by the Kagenti operator. Without it, the MCP server's `@admin_only` decorator still enforces write restrictions at the tool level (Tier 2), and RLS enforces read scoping at the database level.
 

@@ -29,6 +29,9 @@ _out "Deleting PostgreSQL deployment and service"
 oc delete deployment postgresql --ignore-not-found
 oc delete service postgresql --ignore-not-found
 
+_out "Deleting PersistentVolumeClaim"
+oc delete pvc postgres-pvc --ignore-not-found
+
 _out "Deleting secrets and configmaps"
 oc delete secret postgresql-credentials --ignore-not-found
 oc delete configmap postgres-init --ignore-not-found
