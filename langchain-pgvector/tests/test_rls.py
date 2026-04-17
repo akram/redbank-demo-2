@@ -1,7 +1,8 @@
-"""RLS tests — verify role-based access on the embeddings table."""
+"""RLS tests — verify session-variable access control on the embeddings table."""
 
 import pytest
 import psycopg
+from conftest import PG_USER, PG_PASSWORD, _to_psycopg_dsn
 
 
 # Fake 768-dim zero vector literal for seeding
@@ -78,10 +79,11 @@ class TestUserAccess:
         ).fetchall()
         assert len(rows) == 0
 
-    def test_cannot_insert(self, user_conn, seeded_data):
-        with psycopg.connect(
-            user_conn.info.dsn, password=user_conn.info.password, autocommit=False
-        ) as conn:
+    def test_cannot_insert(self, pg_container, seeded_data):
+        dsn = _to_psycopg_dsn(pg_container.get_connection_url())
+        dsn = dsn.replace("postgres:postgres", f"{PG_USER}:{PG_PASSWORD}")
+        with psycopg.connect(dsn, autocommit=False) as conn:
+            conn.execute("SELECT set_config('app.current_role', 'user', false)")
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 conn.execute(
                     f"INSERT INTO embeddings (collection, content, embedding) "

@@ -121,8 +121,11 @@ deploymentSpec:
           \n    # Tag each chunk with its collection\n    for chunk in chunks:\n \
           \       chunk.metadata[\"collection\"] = collection_name\n\n    # Embed\
           \ + store\n    embeddings = HuggingFaceEmbeddings(model_name=\"nomic-ai/nomic-embed-text-v1.5\"\
-          )\n\n    connection_string = (\n        f\"postgresql+psycopg://{pg_user}:{pg_password}\"\
-          \n        f\"@{pg_host}:{pg_port}/{pg_database}\"\n    )\n    engine = PGEngine.from_connection_string(url=connection_string)\n\
+          )\n\n    # Set app.current_role=admin via connection options so RLS allows\
+          \ writes\n    from urllib.parse import quote\n    connection_string = (\n\
+          \        f\"postgresql+psycopg://{pg_user}:{pg_password}\"\n        f\"\
+          @{pg_host}:{pg_port}/{pg_database}\"\n        f\"?options={quote('-c app.current_role=admin')}\"\
+          \n    )\n    engine = PGEngine.from_connection_string(url=connection_string)\n\
           \n    store = PGVectorStore.create_sync(\n        engine=engine,\n     \
           \   table_name=\"embeddings\",\n        embedding_service=embeddings,\n\
           \        metadata_columns=[\"collection\"],\n    )\n    store.add_documents(chunks)\n\
@@ -178,8 +181,11 @@ deploymentSpec:
           \n    # Tag each chunk with its collection\n    for chunk in chunks:\n \
           \       chunk.metadata[\"collection\"] = collection_name\n\n    # Embed\
           \ + store\n    embeddings = HuggingFaceEmbeddings(model_name=\"nomic-ai/nomic-embed-text-v1.5\"\
-          )\n\n    connection_string = (\n        f\"postgresql+psycopg://{pg_user}:{pg_password}\"\
-          \n        f\"@{pg_host}:{pg_port}/{pg_database}\"\n    )\n    engine = PGEngine.from_connection_string(url=connection_string)\n\
+          )\n\n    # Set app.current_role=admin via connection options so RLS allows\
+          \ writes\n    from urllib.parse import quote\n    connection_string = (\n\
+          \        f\"postgresql+psycopg://{pg_user}:{pg_password}\"\n        f\"\
+          @{pg_host}:{pg_port}/{pg_database}\"\n        f\"?options={quote('-c app.current_role=admin')}\"\
+          \n    )\n    engine = PGEngine.from_connection_string(url=connection_string)\n\
           \n    store = PGVectorStore.create_sync(\n        engine=engine,\n     \
           \   table_name=\"embeddings\",\n        embedding_service=embeddings,\n\
           \        metadata_columns=[\"collection\"],\n    )\n    store.add_documents(chunks)\n\

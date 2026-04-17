@@ -76,6 +76,15 @@ def pg_container():
         yield container
 
 
+def _app_conn(pg_container, role: str) -> psycopg.Connection:
+    """Open a connection as the table owner and set app.current_role."""
+    dsn = _to_psycopg_dsn(pg_container.get_connection_url())
+    dsn = dsn.replace("postgres:postgres", f"{PG_USER}:{PG_PASSWORD}")
+    conn = psycopg.connect(dsn, autocommit=True)
+    conn.execute("SELECT set_config('app.current_role', %s, false)", [role])
+    return conn
+
+
 @pytest.fixture(scope="session")
 def superuser_conn(pg_container):
     """psycopg connection as the superuser (postgres)."""
@@ -87,20 +96,15 @@ def superuser_conn(pg_container):
 
 @pytest.fixture(scope="session")
 def admin_conn(pg_container):
-    """psycopg connection as redbank_admin."""
-    dsn = _to_psycopg_dsn(pg_container.get_connection_url())
-    # Replace the superuser creds with the admin role
-    dsn = dsn.replace("postgres:postgres", "redbank_admin:admin_pass")
-    conn = psycopg.connect(dsn, autocommit=True)
+    """psycopg connection as table owner with app.current_role='admin'."""
+    conn = _app_conn(pg_container, "admin")
     yield conn
     conn.close()
 
 
 @pytest.fixture(scope="session")
 def user_conn(pg_container):
-    """psycopg connection as redbank_user."""
-    dsn = _to_psycopg_dsn(pg_container.get_connection_url())
-    dsn = dsn.replace("postgres:postgres", "redbank_user:user_pass")
-    conn = psycopg.connect(dsn, autocommit=True)
+    """psycopg connection as table owner with app.current_role='user'."""
+    conn = _app_conn(pg_container, "user")
     yield conn
     conn.close()

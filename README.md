@@ -120,9 +120,7 @@ When no Bearer token is present, the server falls back to `DEFAULT_ROLE` and `DE
 
 ### Row-Level Security
 
-RLS is enabled and forced (`FORCE ROW LEVEL SECURITY`) on `customers`, `statements`, and `transactions`. The table owner (`$POSTGRESQL_USER`) is the same role the MCP server connects as, so `FORCE` ensures policies apply even to the owner.
-
-> **Note:** The `embeddings` table (used by the RAG pipeline) uses a **different RLS approach** — database roles (`redbank_admin`/`redbank_user`) instead of session variables (`app.current_role`). This is because the pipeline and notebook connect as distinct database roles rather than through the MCP server. No `FORCE ROW LEVEL SECURITY` is needed since these roles are not the table owner.
+RLS is enabled and forced (`FORCE ROW LEVEL SECURITY`) on `customers`, `statements`, `transactions`, and `embeddings`. The table owner (`$POSTGRESQL_USER`) is the same role the MCP server and RAG pipeline connect as, so `FORCE` ensures policies apply even to the owner. All tables use the same session-variable RLS pattern via `app.current_role`.
 
 Before each query, the `@authenticated` decorator opens a connection from the pool and sets two session variables inside a transaction:
 
@@ -259,14 +257,14 @@ Each row represents a single chunk of a source PDF document. PDFs are split into
 
 ### RLS for Embeddings
 
-Role-based access control on the `embeddings` table:
+Access control on the `embeddings` table uses the same session-variable RLS as the MCP tables — the caller's Keycloak JWT determines `app.current_role`:
 
-| Role | Read | Write | Collections visible |
-|------|------|-------|---------------------|
-| `redbank_admin` | All rows | INSERT/UPDATE/DELETE | `admin`, `user` |
-| `redbank_user` | `user` collection only | None | `user` |
+| `app.current_role` | Identity | Read | Write | Collections visible |
+|---------------------|----------|------|-------|---------------------|
+| `admin` | Jane (Keycloak admin role) | All rows | INSERT/UPDATE/DELETE | `admin`, `user` |
+| `user` | John (no admin role) | `user` collection only | None | `user` |
 
-The table owner (`$POSTGRESQL_USER`) bypasses RLS and is used by the ingestion pipeline.
+The pipeline sets `app.current_role=admin` via connection options. The notebook extracts the role from the Keycloak JWT and sets it the same way.
 
 ### Pipeline
 
@@ -285,10 +283,12 @@ Compile the pipeline: `make compile-pipeline`
 
 `langchain-pgvector/notebook/pgvector_query_notebook.ipynb` demonstrates:
 
-1. Admin similarity search — results from both `admin` and `user` collections
-2. User similarity search — results from `user` collection only
-3. Direct SQL verification that RLS blocks user access to admin rows
-4. Document count per collection
+1. Keycloak authentication — get JWTs for Jane (admin) and John (user)
+2. Role extraction from JWT claims (same logic as MCP server)
+3. Jane's similarity search — results from both `admin` and `user` collections
+4. John's similarity search — results from `user` collection only (RLS enforced)
+5. Direct SQL verification that `app.current_role='user'` cannot see admin rows
+6. Document count per collection
 
 ### PostgreSQL Infrastructure
 

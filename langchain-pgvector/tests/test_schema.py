@@ -1,6 +1,4 @@
-"""Schema tests — verify pgvector extension, embeddings table, and role setup."""
-
-import pytest
+"""Schema tests — verify pgvector extension, embeddings table, and RLS setup."""
 
 
 class TestPgvectorExtension:
@@ -54,19 +52,7 @@ class TestEmbeddingsTable:
         assert row is not None, "index on collection column not found"
 
 
-class TestRoles:
-    def test_redbank_admin_role_exists(self, superuser_conn):
-        row = superuser_conn.execute(
-            "SELECT 1 FROM pg_roles WHERE rolname = 'redbank_admin'"
-        ).fetchone()
-        assert row is not None
-
-    def test_redbank_user_role_exists(self, superuser_conn):
-        row = superuser_conn.execute(
-            "SELECT 1 FROM pg_roles WHERE rolname = 'redbank_user'"
-        ).fetchone()
-        assert row is not None
-
+class TestRLS:
     def test_rls_enabled_on_embeddings(self, superuser_conn):
         row = superuser_conn.execute(
             "SELECT relrowsecurity FROM pg_class "
@@ -74,3 +60,11 @@ class TestRoles:
         ).fetchone()
         assert row is not None
         assert row[0] is True, "RLS is not enabled on embeddings"
+
+    def test_rls_forced_on_embeddings(self, superuser_conn):
+        row = superuser_conn.execute(
+            "SELECT relforcerowsecurity FROM pg_class "
+            "WHERE relname = 'embeddings'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] is True, "FORCE RLS is not enabled on embeddings"

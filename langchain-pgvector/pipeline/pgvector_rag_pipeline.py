@@ -69,9 +69,12 @@ def ingest_documents(
     # Embed + store
     embeddings = HuggingFaceEmbeddings(model_name="nomic-ai/nomic-embed-text-v1.5")
 
+    # Set app.current_role=admin via connection options so RLS allows writes
+    from urllib.parse import quote
     connection_string = (
         f"postgresql+psycopg://{pg_user}:{pg_password}"
         f"@{pg_host}:{pg_port}/{pg_database}"
+        f"?options={quote('-c app.current_role=admin')}"
     )
     engine = PGEngine.from_connection_string(url=connection_string)
 
