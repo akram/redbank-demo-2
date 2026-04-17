@@ -13,6 +13,10 @@ function _out() {
 _out "Cleaning up RedBank workloads in namespace: ${NAMESPACE}"
 oc project "${NAMESPACE}"
 
+_out "Deleting Banking Agent deployment and service"
+oc delete deployment redbank-banking-agent --ignore-not-found
+oc delete service redbank-banking-agent --ignore-not-found
+
 _out "Deleting MCP server deployment and service"
 oc delete deployment redbank-mcp-server --ignore-not-found
 oc delete service redbank-mcp-server --ignore-not-found

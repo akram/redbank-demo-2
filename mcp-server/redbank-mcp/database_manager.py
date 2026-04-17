@@ -81,6 +81,11 @@ def auth_connection(
     """
     with get_connection() as conn:
         with conn.transaction():
+            # Drop superuser/BYPASSRLS for this transaction by switching to the
+            # unprivileged 'app' role — required for PostgreSQL RLS to take effect.
+            # The pool connects as the superuser 'user'; SET ROLE scopes the
+            # privilege drop to this transaction only.
+            conn.execute("SET LOCAL ROLE app")
             conn.execute(
                 "SELECT set_config('app.current_user_email', %s, true)", (email,)
             )

@@ -1,0 +1,7 @@
+a2a-sdk[http-server]==0.3.26
+langchain==1.2.15
+langchain-mcp-adapters==0.2.2
+langchain-openai==1.1.13
+langgraph==1.1.6
+mlflow[kubernetes]==3.11.1
+uvicorn==0.38.0

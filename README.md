@@ -1,8 +1,8 @@
 # RedBank Demo — Kagenti Edition
 
-PostgreSQL database and MCP server for the RedBank multi-agent banking demo, adapted for Kagenti deployment with Row-Level Security (RLS).
+PostgreSQL database, MCP server, and A2A agents for the RedBank multi-agent banking demo, adapted for Kagenti deployment with Row-Level Security (RLS).
 
-Part of RHAISTRAT-1459 / RHAIENG-4556.
+Part of RHAISTRAT-1459 / RHAIENG-4555 (Epic) / RHAIENG-4556 (MCP Server) / RHAIENG-4559 (Banking Agent).
 
 ## Directory Layout
 
@@ -22,11 +22,20 @@ redbank-demo-2/
 │   ├── Dockerfile
 │   ├── mcp-server.yaml       Deployment + Service (Kagenti labels)
 │   └── deploy.sh             OpenShift build + deploy
+├── banking-agent/            A2A Banking Operations Agent (Agent C — admin CRUD)
+│   ├── banking_agent/
+│   │   ├── __main__.py       A2A server startup, agent card, MLflow init
+│   │   ├── agent.py          LangGraph ReAct agent + MCP client setup
+│   │   └── agent_executor.py A2A <-> LangGraph bridge with token propagation
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   ├── banking-agent.yaml    Deployment + Service (Kagenti agent labels)
+│   └── deploy.sh             OpenShift build + deploy
 ├── scripts/
 │   ├── setup-keycloak.sh     Provision Keycloak realm, client, users, audience mapper
 │   └── cleanup.sh            Tear down deployed workloads
 ├── tests/
-│   └── test_mcp_rls.py       Integration tests (pytest)
+│   └── test_mcp_rls.py       MCP-level integration tests (pytest)
 ├── Makefile
 └── README.md
 ```
@@ -159,6 +168,44 @@ The MCP server workloads carry Kagenti discovery labels:
 
 These enable the Kagenti operator to discover the MCP server automatically without namespace-level labels or additional CRDs.
 
+### Banking Operations Agent (Agent C)
+
+The Banking Operations Agent is an A2A service built with LangGraph that provides admin-level CRUD access to the RedBank customer database. It connects to the MCP server via `MultiServerMCPClient` from `langchain-mcp-adapters`.
+
+**Architecture:**
+- **Protocol**: A2A (Agent-to-Agent) — exposes `/.well-known/agent-card.json` for Kagenti discovery
+- **Agent framework**: LangGraph `create_react_agent` with a system prompt for banking operations
+- **MCP client**: `MultiServerMCPClient` connected to the PostgreSQL MCP server over HTTP
+- **LLM**: Configurable — vLLM (default) or OpenAI via `ChatOpenAI` with `base_url` override
+- **Observability**: MLflow LangChain autolog (`mlflow.langchain.autolog()`)
+- **Auth**: Trusts AuthBridge sidecar for Tier 1 admin gating. Propagates the incoming Bearer JWT to the MCP server so RLS policies apply.
+
+**Error handling:**
+- MCP tool errors (auth denials, validation failures, DB errors) are intercepted and returned to the LLM as text rather than crashing the agent. The system prompt instructs the LLM to relay permission errors and empty results to the user without hallucinating data.
+- LLM rate limit errors (`429 Too Many Requests`) are caught separately and return a user-friendly "service temporarily overloaded" message.
+- All other agent execution errors are caught and returned as a generic error message.
+
+**Kagenti labels:**
+- **Deployment**: `kagenti.io/type: agent`
+- **Service**: `protocol.kagenti.io/a2a: ""`
+
+**Token flow:**
+1. Caller sends A2A request with `Authorization: Bearer <JWT>`
+2. AuthBridge sidecar validates the token and rejects non-admin users (Tier 1)
+3. Agent extracts the Bearer token from the incoming request
+4. Agent passes the token as a header to `MultiServerMCPClient`
+5. MCP server applies RLS based on the JWT claims (Tier 2)
+
+### Orchestrator Integration (RHAIENG-4560)
+
+Agent C is designed to be called by the Orchestrator Agent (Agent A) via A2A. The orchestrator classifies user intent and routes write operations (update account, create transaction) to this agent while sending read-only queries to the Knowledge Agent (Agent B).
+
+**Integration points:**
+- **Discovery**: The orchestrator discovers Agent C via `protocol.kagenti.io/a2a` service labels
+- **A2A protocol**: Agent C accepts `message/send` JSON-RPC requests at its service URL
+- **Token propagation**: The orchestrator forwards the user's Bearer JWT in the `Authorization` header. Agent C passes it through to the MCP server, preserving the full identity chain.
+- **Access gating**: With AuthBridge deployed, non-admin users are rejected at the network level (Tier 1) before reaching Agent C. Without AuthBridge, the MCP server's `@admin_only` decorator enforces this at the tool level (Tier 2).
+
 ## Deployment
 
 All operations are driven through the Makefile. The default namespace is `redbank-demo` — override with `NAMESPACE=my-namespace`.
@@ -167,24 +214,28 @@ All operations are driven through the Makefile. The default namespace is `redban
 
 | Target | Description |
 |--------|-------------|
-| `deploy-all` | Deploy everything (Postgres + MCP server) |
+| `deploy-all` | Deploy everything (Postgres + MCP server + Banking Agent) |
 | `deploy-db` | Create namespace and apply Kustomize (Secret + ConfigMap + Deployment + Service) |
 | `deploy-mcp` | Build MCP server image via `oc new-build` and deploy |
+| `deploy-agent-c` | Build Banking Operations Agent image and deploy |
 | `setup-keycloak` | Provision Keycloak realm, client, audience mapper, roles, and demo users |
 | `clean` | Tear down deployed workloads (deployments, services, secrets, configmaps) |
+
+> **Note:** Tier 1 access gating (non-admin rejection at the network level) requires the Kagenti AuthBridge sidecar, which is injected by the Kagenti operator. Without it, the MCP server's `@admin_only` decorator still enforces write restrictions at the tool level (Tier 2), and RLS enforces read scoping at the database level.
 
 ### Quick Start
 
 ```bash
 # 1. Deploy the database and MCP server
-make deploy-all
-# or with a custom namespace:
-NAMESPACE=my-namespace make deploy-all
+make deploy-db deploy-mcp
 
 # 2. Configure Keycloak (creates realm, client, users, audience mapper)
 KEYCLOAK_ADMIN=<admin-user> KEYCLOAK_PASSWORD=<admin-password> make setup-keycloak
 
-# 3. Verify
+# 3. Deploy the Banking Operations Agent (requires LLM config)
+LLM_BASE_URL=<vllm-endpoint>/v1 LLM_MODEL=<model-name> make deploy-agent-c
+
+# 4. Verify
 oc get pods
 ```
 
@@ -461,6 +512,19 @@ By default, tests fetch real access tokens from Keycloak. Set `USE_FAKE_JWT=true
 | `ADMIN_ROLE_CLAIM` | `admin` | Role name that grants admin access |
 | `DEFAULT_ROLE` | `admin` | Fallback role when no Bearer token present |
 | `DEFAULT_EMAIL` | `jane@redbank.demo` | Fallback email when no Bearer token present |
+
+### Banking Agent
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8001` | Bind port |
+| `MCP_SERVER_URL` | `http://redbank-mcp-server:8000/mcp` | MCP server endpoint (in-cluster service) |
+| `LLM_BASE_URL` | (required) | vLLM or OpenAI API base URL (e.g. `http://vllm:8000/v1`) |
+| `LLM_MODEL` | (required) | Model name (e.g. `meta-llama/Llama-3.1-8B-Instruct`) |
+| `OPENAI_API_KEY` | (required) | API key for the LLM endpoint (vLLM or OpenAI). Stored in `llm-credentials` secret. |
+| `MLFLOW_TRACKING_URI` | (optional) | MLflow tracking endpoint from OpenShift AI |
+| `AGENT_URL` | `http://redbank-banking-agent:8001` | Agent's own URL (used in agent card) |
 
 ### Production Configuration
 
