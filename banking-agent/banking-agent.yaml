@@ -3,7 +3,6 @@ kind: Deployment
 metadata:
   name: redbank-banking-agent
   labels:
-    kagenti.io/type: agent
     app.kubernetes.io/name: redbank-banking-agent
 spec:
   replicas: 1
@@ -14,7 +13,6 @@ spec:
     metadata:
       labels:
         app: redbank-banking-agent
-        kagenti.io/type: agent
     spec:
       containers:
       - name: banking-agent

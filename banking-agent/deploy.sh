@@ -53,6 +53,9 @@ function setup() {
     envsubst '${NAMESPACE} ${LLM_BASE_URL} ${LLM_MODEL} ${MLFLOW_TRACKING_URI}' \
     < ./banking-agent.yaml | oc apply -f -
 
+  _out Applying AgentRuntime CR
+  oc apply -f ./agentruntime.yaml
+
   _out Done deploying redbank-banking-agent
 }
 

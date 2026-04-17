@@ -20,7 +20,8 @@ redbank-demo-2/
 │   │   └── logger.py
 │   ├── requirements.txt
 │   ├── Dockerfile
-│   ├── mcp-server.yaml       Deployment + Service (Kagenti labels)
+│   ├── mcp-server.yaml       Deployment + Service
+│   ├── agentruntime.yaml     AgentRuntime CR (type: tool)
 │   └── deploy.sh             OpenShift build + deploy
 ├── banking-agent/            A2A Banking Operations Agent (Agent C — admin CRUD)
 │   ├── banking_agent/
@@ -29,7 +30,8 @@ redbank-demo-2/
 │   │   └── agent_executor.py A2A <-> LangGraph bridge with token propagation
 │   ├── requirements.txt
 │   ├── Dockerfile
-│   ├── banking-agent.yaml    Deployment + Service (Kagenti agent labels)
+│   ├── banking-agent.yaml    Deployment + Service
+│   ├── agentruntime.yaml     AgentRuntime CR (type: agent)
 │   └── deploy.sh             OpenShift build + deploy
 ├── scripts/
 │   ├── setup-keycloak.sh     Provision Keycloak realm, client, users, audience mapper
@@ -159,14 +161,25 @@ RLS policies then filter based on these variables:
 
 Seed data includes 5 customers (Alice, Bob, Carol, David, John), 13 statements, and 27 transactions.
 
-### Kagenti Labels
+### Kagenti Integration
 
-The MCP server workloads carry Kagenti discovery labels:
+Each workload is enrolled into the Kagenti platform via an `AgentRuntime` custom resource (`agent.kagenti.dev/v1alpha1`). The `AgentRuntime` references the Deployment via `targetRef` — the operator then manages `kagenti.io/type` labels, sets a `kagenti.io/config-hash` annotation for rollout coordination, and enables AuthBridge sidecar injection at Pod admission.
 
-- **Deployment**: `kagenti.io/type: tool`
-- **Service**: `protocol.kagenti.io/mcp: "true"`
+| Workload | AgentRuntime | `spec.type` | Protocol label (Service) |
+|----------|-------------|-------------|--------------------------|
+| `redbank-mcp-server` | `redbank-mcp-server-runtime` | `tool` | `protocol.kagenti.io/mcp: "true"` |
+| `redbank-banking-agent` | `redbank-banking-agent-runtime` | `agent` | `protocol.kagenti.io/a2a: ""` |
 
-These enable the Kagenti operator to discover the MCP server automatically without namespace-level labels or additional CRDs.
+The `kagenti.io/type` label on Deployments is managed by the operator — do not set it manually. Protocol labels on Services (`protocol.kagenti.io/a2a`, `protocol.kagenti.io/mcp`) remain in the Service manifests since they drive AgentCard sync and tool discovery independently.
+
+Verify enrollment:
+
+```bash
+oc get agentruntime
+# NAME                              TYPE    TARGET                   PHASE   AGE
+# redbank-banking-agent-runtime     agent   redbank-banking-agent    Active  ...
+# redbank-mcp-server-runtime        tool    redbank-mcp-server       Active  ...
+```
 
 ### Banking Operations Agent (Agent C)
 
@@ -185,9 +198,9 @@ The Banking Operations Agent is an A2A service built with LangGraph that provide
 - LLM rate limit errors (`429 Too Many Requests`) are caught separately and return a user-friendly "service temporarily overloaded" message.
 - All other agent execution errors are caught and returned as a generic error message.
 
-**Kagenti labels:**
-- **Deployment**: `kagenti.io/type: agent`
-- **Service**: `protocol.kagenti.io/a2a: ""`
+**Kagenti enrollment:**
+- **AgentRuntime**: `redbank-banking-agent-runtime` (type: `agent`) — operator manages `kagenti.io/type` label and AuthBridge injection
+- **Service**: `protocol.kagenti.io/a2a: ""` — enables AgentCard sync and A2A discovery
 
 **Token flow:**
 1. Caller sends A2A request with `Authorization: Bearer <JWT>`
@@ -268,7 +281,7 @@ make clean                         # uses default namespace
 NAMESPACE=my-namespace make clean  # override namespace
 ```
 
-This removes deployments, services, secrets, and configmaps for both Postgres and the MCP server. It does not remove the namespace or Keycloak resources.
+This removes AgentRuntime CRs, deployments, services, secrets, and configmaps. It does not remove the namespace or Keycloak resources.
 
 ## Manual Testing
 
@@ -451,11 +464,14 @@ curl -s http://localhost:8000/mcp \
 
 Expected: updated customer record with `phone: "555-9999"`.
 
-### Step 10 — Verify Kagenti labels
+### Step 10 — Verify Kagenti enrollment
 
 ```bash
+oc get agentruntime
+# expect: redbank-banking-agent-runtime (agent, Active) and redbank-mcp-server-runtime (tool, Active)
+
 oc get deployment redbank-mcp-server -o jsonpath='{.metadata.labels.kagenti\.io/type}'
-# expect: tool
+# expect: tool (set by operator)
 
 oc get svc redbank-mcp-server -o jsonpath='{.metadata.labels.protocol\.kagenti\.io/mcp}'
 # expect: true
