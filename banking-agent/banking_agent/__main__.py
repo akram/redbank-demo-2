@@ -1,0 +1,143 @@
+"""A2A server entry point for the RedBank Banking Operations Agent."""
+
+from __future__ import annotations
+
+import logging
+import os
+
+import mlflow
+import uvicorn
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.apps.jsonrpc.jsonrpc_app import CallContextBuilder
+from a2a.server.context import ServerCallContext
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
+    AgentSkill,
+    HTTPAuthSecurityScheme,
+    SecurityScheme,
+)
+from starlette.requests import Request
+
+from .agent_executor import BankingAgentExecutor
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", "8001"))
+AGENT_URL = os.getenv("AGENT_URL", f"http://localhost:{PORT}")
+
+
+class BearerTokenContextBuilder(CallContextBuilder):
+    """Extracts the incoming Bearer token from the HTTP Authorization header
+    and stashes it into the ServerCallContext state so the AgentExecutor can
+    propagate it downstream (e.g. to the MCP server)."""
+
+    def build(self, request: Request) -> ServerCallContext:
+        state: dict = {}
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            state["bearer_token"] = auth[7:]
+        return ServerCallContext(state=state)
+
+
+def _build_agent_card() -> AgentCard:
+    skill = AgentSkill(
+        id="banking_operations",
+        name="Banking Operations",
+        description=(
+            "Full read and write access to the RedBank customer database. "
+            "Look up customers, view transactions and account summaries, "
+            "update account details, and create new transactions."
+        ),
+        tags=["banking", "admin", "crud", "customer-data", "transactions"],
+        examples=[
+            "Look up the account for alice.johnson@email.com",
+            "Show me the transactions for customer 3",
+            "Update customer 5's phone number to 555-1234",
+            "Create a $500 credit transaction for customer 2",
+            "What is the account summary for customer 1?",
+        ],
+    )
+
+    return AgentCard(
+        name="RedBank Banking Operations Agent",
+        description=(
+            "Admin-only banking operations agent with full CRUD access "
+            "to the RedBank customer database via MCP. Handles account "
+            "lookups, transaction history, account updates, and new "
+            "transaction creation."
+        ),
+        url=AGENT_URL,
+        version="1.0.0",
+        default_input_modes=["text/plain"],
+        default_output_modes=["text/plain"],
+        capabilities=AgentCapabilities(streaming=False),
+        skills=[skill],
+        security=[{"bearer_auth": []}],
+        security_schemes={
+            "bearer_auth": SecurityScheme(
+                root=HTTPAuthSecurityScheme(
+                    scheme="Bearer",
+                    bearer_format="JWT",
+                    description="Keycloak JWT for RedBank realm",
+                )
+            )
+        },
+    )
+
+
+def _configure_mlflow() -> None:
+    """Configure MLflow tracking against OpenShift AI's in-cluster MLflow.
+
+    Reads MLFLOW_TRACKING_URI (required) and MLFLOW_EXPERIMENT_NAME (optional,
+    defaults to 'banking-agent'). Authentication is handled by MLflow's
+    built-in ``kubernetes-namespaced`` auth provider (set by RHOAI via the
+    ``MLFLOW_TRACKING_AUTH`` env var), which uses the pod's ServiceAccount
+    token automatically — requires the ``mlflow[kubernetes]`` extra.
+    """
+    uri = os.getenv("MLFLOW_TRACKING_URI", "").strip()
+    if not uri:
+        logger.info("MLFLOW_TRACKING_URI not set; MLflow tracing disabled")
+        return
+
+    mlflow.set_tracking_uri(uri)
+    experiment = os.getenv("MLFLOW_EXPERIMENT_NAME", "banking-agent")
+    mlflow.set_experiment(experiment)
+    mlflow.langchain.autolog()
+    auth = os.getenv("MLFLOW_TRACKING_AUTH", "default")
+    logger.info(
+        "MLflow: tracking_uri=%s experiment=%s auth=%s",
+        uri, experiment, auth,
+    )
+
+
+def main() -> None:
+    _configure_mlflow()
+
+    agent_card = _build_agent_card()
+    logger.info("Agent card: %s @ %s", agent_card.name, agent_card.url)
+
+    request_handler = DefaultRequestHandler(
+        agent_executor=BankingAgentExecutor(),
+        task_store=InMemoryTaskStore(),
+    )
+
+    app_builder = A2AStarletteApplication(
+        agent_card=agent_card,
+        http_handler=request_handler,
+        context_builder=BearerTokenContextBuilder(),
+    )
+
+    logger.info("Starting A2A server on %s:%d", HOST, PORT)
+    uvicorn.run(app_builder.build(), host=HOST, port=PORT)
+
+
+if __name__ == "__main__":
+    main()

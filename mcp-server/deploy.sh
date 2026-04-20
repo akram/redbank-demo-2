@@ -35,6 +35,9 @@ function setup() {
   NAMESPACE="${ns}" KEYCLOAK_HOST="${KEYCLOAK_HOST}" \
     envsubst '${NAMESPACE} ${KEYCLOAK_HOST}' < ./mcp-server.yaml | oc apply -f -
 
+  _out Applying AgentRuntime CR
+  oc apply -f ./agentruntime.yaml
+
   _out Done deploying redbank-mcp-server
 }
 

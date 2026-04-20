@@ -2,8 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: redbank-mcp-server
-  labels:
-    kagenti.io/type: tool
 spec:
   replicas: 1
   selector:
@@ -13,7 +11,6 @@ spec:
     metadata:
       labels:
         app: redbank-mcp-server
-        kagenti.io/type: tool
     spec:
       containers:
       - name: mcp-server

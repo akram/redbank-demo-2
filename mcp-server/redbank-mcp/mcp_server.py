@@ -113,7 +113,13 @@ def _extract_auth() -> AuthContext:
             decode_kwargs["audience"] = JWT_AUDIENCE
     else:
         decode_kwargs = {
-            "options": {"verify_signature": False},
+            "options": {
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_nbf": False,
+                "verify_iss": False,
+                "verify_aud": False,
+            },
             "algorithms": JWT_ALGORITHMS,
         }
 
@@ -186,6 +192,9 @@ def authenticated(func):
             auth = _extract_auth()
             with auth_connection(auth.email, auth.role) as conn:
                 return func(*args, auth=auth, conn=conn, **kwargs)
+        except jwt.exceptions.PyJWTError as e:
+            logger.error("Auth error in %s: %s", func.__name__, e)
+            raise RuntimeError(f"Authentication error: {e}")
         except psycopg.Error as e:
             logger.error("Database error in %s: %s", func.__name__, e)
             raise RuntimeError(f"Database error: {e}")

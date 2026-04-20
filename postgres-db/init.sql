@@ -158,9 +158,10 @@ GRANT ALL PRIVILEGES ON SEQUENCE transactions_transaction_id_seq TO "$POSTGRESQL
 --
 -- RLS is enforced at the application level: the MCP server sets session
 -- variables (app.current_role, app.current_user_email) via SET LOCAL before
--- each query.  The table owner ($POSTGRESQL_USER) is NOT subject to RLS by
--- default — we use FORCE ROW LEVEL SECURITY so policies apply even to the
--- table owner, which is the role the MCP server connects as.
+-- each query.  FORCE ROW LEVEL SECURITY makes policies apply to the table
+-- owner role, but PostgreSQL always bypasses RLS for superusers and roles
+-- with BYPASSRLS.  The MCP server therefore runs as the unprivileged 'app'
+-- role (SET LOCAL ROLE app) so that policies are evaluated correctly.
 -- =============================================================================
 
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
