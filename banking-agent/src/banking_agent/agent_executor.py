@@ -16,26 +16,12 @@ from .agent import create_agent_with_tools
 logger = logging.getLogger(__name__)
 
 
-def _extract_user_text(context: RequestContext) -> str:
-    """Pull the user's text content from the A2A request context."""
-    message = context.message
-    if message and message.parts:
-        for part in message.parts:
-            if hasattr(part, "root"):
-                part = part.root
-            if hasattr(part, "text"):
-                return part.text
-    return ""
-
-
 def _extract_bearer_token(context: RequestContext) -> str | None:
     """Extract the Bearer token that the CallContextBuilder stashed in state."""
     try:
         call_ctx = context.call_context
         if call_ctx and call_ctx.state:
-            token = call_ctx.state.get("bearer_token")
-            if token:
-                return token
+            return call_ctx.state.get("bearer_token")
     except Exception:
         pass
     return None
@@ -50,8 +36,8 @@ class BankingAgentExecutor(AgentExecutor):
         context: RequestContext,
         event_queue: EventQueue,
     ) -> None:
-        user_text = _extract_user_text(context)
-        if not user_text:
+        user_text = context.get_user_input()
+        if not user_text or not user_text.strip():
             await event_queue.enqueue_event(
                 new_agent_text_message("I didn't receive a message. Please try again.")
             )
@@ -66,11 +52,9 @@ class BankingAgentExecutor(AgentExecutor):
 
         try:
             graph, client = await create_agent_with_tools(bearer_token)
-
             result = await graph.ainvoke(
                 {"messages": [{"role": "user", "content": user_text}]}
             )
-
             response_text = result["messages"][-1].content
             await event_queue.enqueue_event(new_agent_text_message(response_text))
 

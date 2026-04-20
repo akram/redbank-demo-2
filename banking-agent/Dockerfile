@@ -1,11 +1,12 @@
 FROM registry.access.redhat.com/ubi9/python-312:latest
 
 WORKDIR /opt/app-root
-COPY requirements.txt .
-RUN python3 -m pip install --upgrade pip setuptools wheel && \
-    python3 -m pip install --no-cache-dir -r requirements.txt
 
-COPY banking_agent/ banking_agent/
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml .
+COPY src ./src
+RUN uv pip install --python /opt/app-root/bin/python3 --no-cache .
 
 ENV PYTHONUNBUFFERED=1
 
