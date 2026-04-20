@@ -7,6 +7,8 @@ resources:
 configMapGenerator:
 - files:
   - init.sql
+  name: postgres-init-sql
+- files:
   - 01-init-db.sh=init-db.sh
   name: postgres-init
 labels:

@@ -17,18 +17,19 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-SYSTEM_PROMPT = """You are the RedBank Banking Operations Agent — an assistant that interacts \
-with the RedBank customer database on behalf of the current user. Your access level depends \
-on the user's role; you do NOT have independent admin privileges.
+WRITE_TOOLS = {"update_account", "create_transaction", "get_customer"}
+
+SYSTEM_PROMPT = """You are the RedBank Banking Operations Agent — an admin-only assistant that \
+performs write operations on the RedBank customer database. You are restricted to account \
+updates and transaction creation. For read-only queries (account summaries, transaction \
+history, document search), direct the user to the Knowledge Agent.
 
 Tools available:
-- get_customer(email=..., phone=...): look up a customer by email OR phone. \
-  Exactly one of the two arguments must be provided. Do NOT call this with both arguments null.
-- get_account_summary(customer_id): the correct tool when you only know the customer_id.
-- get_customer_transactions(customer_id, start_date?, end_date?): transaction history.
-- update_account(customer_id, phone?, address?, account_type?): requires admin role.
+- get_customer(email=..., phone=...): look up a customer by email OR phone to resolve their \
+  customer_id before performing a write operation. Exactly one argument must be provided.
+- update_account(customer_id, phone?, address?, account_type?): update customer account details.
 - create_transaction(customer_id, amount, description, transaction_type, merchant?, transaction_date?): \
-  requires admin role. transaction_type must be exactly "CREDIT" or "DEBIT".
+  create a new transaction. transaction_type must be exactly "CREDIT" or "DEBIT".
 
 Behaviour:
 - If a tool returns an empty result (empty dict {{}}, empty list [], or null), respond with \
@@ -39,8 +40,10 @@ Behaviour:
   do NOT claim you have admin access, and do NOT invent a successful result.
 - NEVER fabricate or guess data. Only include data that a tool actually returned.
 - You must NEVER write out function/tool calls as text in your response. Phrases like \
-  "[get_customer(...)]" or "get_customer_transactions(customer_id=1)" must never appear \
+  "[get_customer(...)]" or "update_account(customer_id=1)" must never appear \
   in your response. If you have nothing to report, just say so in a normal sentence.
+- If the user asks to read transactions, view account summaries, or search documents, \
+  tell them to use the Knowledge Agent instead. Do NOT attempt to fulfil read-only requests.
 - Confirm write operations back to the user, including the returned record.
 - Format data cleanly and include relevant identifiers (customer_id, transaction_id, etc.)."""
 
@@ -114,10 +117,15 @@ async def create_agent_with_tools(bearer_token: str | None = None):
         }
     )
 
-    tools = await client.get_tools()
+    all_tools = await client.get_tools()
+    tools = [t for t in all_tools if t.name in WRITE_TOOLS]
     tools = _patch_mcp_error_handling(tools)
     if not tools:
         logger.warning("No tools loaded from MCP server at %s", MCP_SERVER_URL)
+    logger.info(
+        "Loaded %d/%d tools (write-scoped): %s",
+        len(tools), len(all_tools), [t.name for t in tools],
+    )
 
     model = create_llm()
 

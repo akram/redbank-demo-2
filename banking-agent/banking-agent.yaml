@@ -4,6 +4,7 @@ metadata:
   name: redbank-banking-agent
   labels:
     app.kubernetes.io/name: redbank-banking-agent
+    protocol.kagenti.io/a2a: ""
 spec:
   replicas: 1
   selector:
@@ -53,6 +54,7 @@ metadata:
   name: redbank-banking-agent
   labels:
     protocol.kagenti.io/a2a: ""
+    kagenti.io/type: agent
     app.kubernetes.io/name: redbank-banking-agent
 spec:
   selector:

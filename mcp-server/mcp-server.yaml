@@ -60,7 +60,7 @@ spec:
         # Default identity when no Bearer token is present (local dev only).
         # In production with AuthBridge, unauthenticated requests never reach this container.
         - name: DEFAULT_ROLE
-          value: "admin"
+          value: "user"
         - name: DEFAULT_EMAIL
           value: "jane@redbank.demo"
 ---
