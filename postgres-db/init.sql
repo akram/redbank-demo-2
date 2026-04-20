@@ -135,6 +135,21 @@ INSERT INTO user_accounts (email, customer_id, role) VALUES
 ON CONFLICT (email) DO NOTHING;
 
 -- =============================================================================
+-- Application Role
+-- =============================================================================
+--
+-- The community pgvector image creates $POSTGRESQL_USER as a superuser.
+-- Superusers always bypass RLS, so we create a non-superuser app role
+-- for application connections (MCP server, pipeline, notebook).
+-- =============================================================================
+
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') THEN
+        CREATE ROLE app WITH LOGIN PASSWORD 'app';
+    END IF;
+END $$;
+
+-- =============================================================================
 -- Ownership & Grants
 -- =============================================================================
 
@@ -143,14 +158,14 @@ ALTER TABLE statements OWNER TO "$POSTGRESQL_USER";
 ALTER TABLE transactions OWNER TO "$POSTGRESQL_USER";
 ALTER TABLE user_accounts OWNER TO "$POSTGRESQL_USER";
 
-GRANT ALL PRIVILEGES ON TABLE customers TO "$POSTGRESQL_USER";
-GRANT ALL PRIVILEGES ON TABLE statements TO "$POSTGRESQL_USER";
-GRANT ALL PRIVILEGES ON TABLE transactions TO "$POSTGRESQL_USER";
-GRANT ALL PRIVILEGES ON TABLE user_accounts TO "$POSTGRESQL_USER";
+GRANT ALL PRIVILEGES ON TABLE customers TO app;
+GRANT ALL PRIVILEGES ON TABLE statements TO app;
+GRANT ALL PRIVILEGES ON TABLE transactions TO app;
+GRANT ALL PRIVILEGES ON TABLE user_accounts TO app;
 
-GRANT ALL PRIVILEGES ON SEQUENCE customers_customer_id_seq TO "$POSTGRESQL_USER";
-GRANT ALL PRIVILEGES ON SEQUENCE statements_statement_id_seq TO "$POSTGRESQL_USER";
-GRANT ALL PRIVILEGES ON SEQUENCE transactions_transaction_id_seq TO "$POSTGRESQL_USER";
+GRANT ALL PRIVILEGES ON SEQUENCE customers_customer_id_seq TO app;
+GRANT ALL PRIVILEGES ON SEQUENCE statements_statement_id_seq TO app;
+GRANT ALL PRIVILEGES ON SEQUENCE transactions_transaction_id_seq TO app;
 
 -- =============================================================================
 -- Row-Level Security
@@ -224,4 +239,50 @@ CREATE POLICY user_own_transactions ON transactions
                 WHERE ua.email = current_setting('app.current_user_email', true)
             )
         )
+    );
+
+-- =============================================================================
+-- PGVector — Embeddings Table & Session-Variable RLS
+-- =============================================================================
+--
+-- This section supports the LangChain + PGVector RAG pipeline. It uses the
+-- same session-variable RLS pattern as the tables above: the caller sets
+-- app.current_role (from a Keycloak JWT) before each query, and PostgreSQL
+-- policies filter rows accordingly.
+--
+-- Admin (app.current_role = 'admin'): full read/write on all collections.
+-- User  (app.current_role = 'user'):  read-only on the 'user' collection.
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    langchain_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    collection VARCHAR(64) NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(768) NOT NULL,
+    langchain_metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_collection ON embeddings(collection);
+
+ALTER TABLE embeddings OWNER TO "$POSTGRESQL_USER";
+
+GRANT ALL PRIVILEGES ON TABLE embeddings TO app;
+
+ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE embeddings FORCE ROW LEVEL SECURITY;
+
+-- Admin: full access to all collections
+CREATE POLICY admin_all_embeddings ON embeddings
+    FOR ALL
+    USING (current_setting('app.current_role', true) = 'admin')
+    WITH CHECK (current_setting('app.current_role', true) = 'admin');
+
+-- User: read-only, restricted to 'user' collection
+CREATE POLICY user_select_embeddings ON embeddings
+    FOR SELECT
+    USING (
+        current_setting('app.current_role', true) = 'user'
+        AND collection = 'user'
     );

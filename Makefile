@@ -1,4 +1,4 @@
-.PHONY: deploy-db deploy-mcp deploy-agent-c deploy-all clean setup-keycloak
+.PHONY: deploy-db deploy-mcp deploy-agent-c deploy-all clean setup-keycloak test-pgvector compile-pipeline
 
 NAMESPACE ?= redbank-demo
 export NAMESPACE
@@ -21,3 +21,9 @@ clean:
 
 setup-keycloak:
 	bash scripts/setup-keycloak.sh
+
+test-pgvector:
+	cd langchain-pgvector && python3 -m pytest tests/ -v
+
+compile-pipeline:
+	cd langchain-pgvector/pipeline && python3 pgvector_rag_pipeline.py

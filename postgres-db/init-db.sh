@@ -1,9 +1,13 @@
 #!/bin/bash
 
-# This script runs every time the server starts (via postgresql-start).
+# This script runs at first startup via /docker-entrypoint-initdb.d/.
 # Substitutes $POSTGRESQL_USER in init.sql and applies the schema + seed data.
+# Supports both RHEL (POSTGRESQL_USER) and community (POSTGRES_USER) env vars.
+
+DB_USER="${POSTGRESQL_USER:-${POSTGRES_USER:-user}}"
+DB_NAME="${POSTGRESQL_DATABASE:-${POSTGRES_DB:-db}}"
 
 echo "Running initialization SQL..."
-sed "s/\$POSTGRESQL_USER/$POSTGRESQL_USER/g" /opt/app-root/src/postgresql-start/init.sql | \
-    psql -U postgres -d "$POSTGRESQL_DATABASE"
+sed "s/\$POSTGRESQL_USER/$DB_USER/g" /docker-entrypoint-initdb.d/init.sql | \
+    psql -U "$DB_USER" -d "$DB_NAME"
 echo "Initialization complete!"
