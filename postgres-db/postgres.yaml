@@ -66,15 +66,21 @@ spec:
         ports:
         - containerPort: 5432
         volumeMounts:
-        - name: init-sql
+        - name: init-script
           mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+        - name: init-sql
+          mountPath: /opt/init
           readOnly: true
         - name: pgdata
           mountPath: /var/lib/postgresql/data
       volumes:
-      - name: init-sql
+      - name: init-script
         configMap:
           name: postgres-init
+      - name: init-sql
+        configMap:
+          name: postgres-init-sql
       - name: pgdata
         persistentVolumeClaim:
           claimName: postgres-pvc

@@ -4,6 +4,7 @@ metadata:
   name: redbank-banking-agent
   labels:
     app.kubernetes.io/name: redbank-banking-agent
+    protocol.kagenti.io/a2a: ""
 spec:
   replicas: 1
   selector:
@@ -46,6 +47,8 @@ spec:
         # Omit or leave empty to disable remote tracking.
         - name: MLFLOW_TRACKING_URI
           value: "${MLFLOW_TRACKING_URI}"
+        - name: MLFLOW_TRACKING_INSECURE_TLS
+          value: "true"
 ---
 apiVersion: v1
 kind: Service
@@ -53,6 +56,7 @@ metadata:
   name: redbank-banking-agent
   labels:
     protocol.kagenti.io/a2a: ""
+    kagenti.io/type: agent
     app.kubernetes.io/name: redbank-banking-agent
 spec:
   selector:

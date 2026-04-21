@@ -8,6 +8,6 @@ DB_USER="${POSTGRESQL_USER:-${POSTGRES_USER:-user}}"
 DB_NAME="${POSTGRESQL_DATABASE:-${POSTGRES_DB:-db}}"
 
 echo "Running initialization SQL..."
-sed "s/\$POSTGRESQL_USER/$DB_USER/g" /docker-entrypoint-initdb.d/init.sql | \
+sed "s/\$POSTGRESQL_USER/$DB_USER/g" /opt/init/init.sql | \
     psql -U "$DB_USER" -d "$DB_NAME"
 echo "Initialization complete!"

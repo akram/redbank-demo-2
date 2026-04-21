@@ -52,32 +52,31 @@ def _build_agent_card() -> AgentCard:
         id="banking_operations",
         name="Banking Operations",
         description=(
-            "Full read and write access to the RedBank customer database. "
-            "Look up customers, view transactions and account summaries, "
-            "update account details, and create new transactions."
+            "Admin-only write access to the RedBank customer database. "
+            "Update account details and create new transactions. "
+            "Read-only queries should be directed to the Knowledge Agent."
         ),
-        tags=["banking", "admin", "crud", "customer-data", "transactions"],
+        tags=["banking", "admin", "write", "transactions", "account-updates"],
         examples=[
-            "Look up the account for alice.johnson@email.com",
-            "Show me the transactions for customer 3",
             "Update customer 5's phone number to 555-1234",
             "Create a $500 credit transaction for customer 2",
-            "What is the account summary for customer 1?",
+            "Change the address for alice.johnson@email.com",
         ],
     )
 
     return AgentCard(
         name="RedBank Banking Operations Agent",
         description=(
-            "Admin-only banking operations agent with full CRUD access "
+            "Admin-only banking operations agent with write access "
             "to the RedBank customer database via MCP. Handles account "
-            "lookups, transaction history, account updates, and new "
-            "transaction creation."
+            "updates and new transaction creation. Read-only queries "
+            "(transaction history, account summaries, document search) "
+            "are handled by the Knowledge Agent."
         ),
         url=AGENT_URL,
         version="1.0.0",
-        default_input_modes=["text/plain"],
-        default_output_modes=["text/plain"],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
         capabilities=AgentCapabilities(streaming=False),
         skills=[skill],
         security=[{"bearer_auth": []}],
@@ -94,27 +93,24 @@ def _build_agent_card() -> AgentCard:
 
 
 def _configure_mlflow() -> None:
-    """Configure MLflow tracking against OpenShift AI's in-cluster MLflow.
-
-    Reads MLFLOW_TRACKING_URI (required) and MLFLOW_EXPERIMENT_NAME (optional,
-    defaults to 'banking-agent'). Authentication is handled by MLflow's
-    built-in ``kubernetes-namespaced`` auth provider (set by RHOAI via the
-    ``MLFLOW_TRACKING_AUTH`` env var), which uses the pod's ServiceAccount
-    token automatically — requires the ``mlflow[kubernetes]`` extra.
-    """
+    """Configure MLflow tracking against OpenShift AI's in-cluster MLflow."""
     uri = os.getenv("MLFLOW_TRACKING_URI", "").strip()
     if not uri:
         logger.info("MLFLOW_TRACKING_URI not set; MLflow tracing disabled")
         return
+
+    if os.getenv("MLFLOW_TRACKING_INSECURE_TLS", "").lower() in ("true", "1"):
+        os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
 
     mlflow.set_tracking_uri(uri)
     experiment = os.getenv("MLFLOW_EXPERIMENT_NAME", "banking-agent")
     mlflow.set_experiment(experiment)
     mlflow.langchain.autolog()
     auth = os.getenv("MLFLOW_TRACKING_AUTH", "default")
+    insecure = os.getenv("MLFLOW_TRACKING_INSECURE_TLS", "false")
     logger.info(
-        "MLflow: tracking_uri=%s experiment=%s auth=%s",
-        uri, experiment, auth,
+        "MLflow: tracking_uri=%s experiment=%s auth=%s insecure_tls=%s",
+        uri, experiment, auth, insecure,
     )
 
 
@@ -124,14 +120,14 @@ def main() -> None:
     agent_card = _build_agent_card()
     logger.info("Agent card: %s @ %s", agent_card.name, agent_card.url)
 
-    request_handler = DefaultRequestHandler(
+    handler = DefaultRequestHandler(
         agent_executor=BankingAgentExecutor(),
         task_store=InMemoryTaskStore(),
     )
 
     app_builder = A2AStarletteApplication(
         agent_card=agent_card,
-        http_handler=request_handler,
+        http_handler=handler,
         context_builder=BearerTokenContextBuilder(),
     )
 
