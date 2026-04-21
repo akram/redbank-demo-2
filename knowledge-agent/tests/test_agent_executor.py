@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from knowledge_agent.agent_executor import (
+from src.agent_executor import (
     KnowledgeAgentExecutor,
     _extract_bearer_token,
     _extract_user_text,
@@ -56,7 +56,7 @@ class TestExtractBearerToken:
 
 class TestKnowledgeAgentExecutor:
     @pytest.mark.asyncio
-    @patch("knowledge_agent.agent_executor.create_agent_with_tools")
+    @patch("src.agent_executor.create_agent_with_tools")
     async def test_execute_enqueues_response(self, mock_create):
         graph = AsyncMock()
         graph.ainvoke.return_value = {
@@ -87,7 +87,7 @@ class TestKnowledgeAgentExecutor:
         assert "didn't receive" in msg.parts[0].root.text.lower()
 
     @pytest.mark.asyncio
-    @patch("knowledge_agent.agent_executor.create_agent_with_tools")
+    @patch("src.agent_executor.create_agent_with_tools")
     async def test_execute_handles_rate_limit(self, mock_create):
         from openai import RateLimitError
 

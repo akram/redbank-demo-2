@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from knowledge_agent.__main__ import _build_agent_card, _configure_mlflow
+from src.__main__ import _build_agent_card, _configure_mlflow
 
 
 class TestAgentCard:
@@ -35,7 +35,7 @@ class TestConfigureMLflow:
     def test_disabled_when_no_uri(self):
         _configure_mlflow()
 
-    @patch("knowledge_agent.__main__.mlflow")
+    @patch("src.__main__.mlflow")
     @patch.dict("os.environ", {
         "MLFLOW_TRACKING_URI": "http://mlflow:5000",
         "MLFLOW_EXPERIMENT_NAME": "test-exp",

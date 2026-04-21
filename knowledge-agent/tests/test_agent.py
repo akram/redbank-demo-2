@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from knowledge_agent.agent import (
+from src.agent import (
     ALLOWED_TOOLS,
     _filter_allowed_tools,
     create_llm,
@@ -50,9 +50,9 @@ class TestToolAllowList:
 
 
 class TestCreateLLM:
-    @patch("knowledge_agent.agent.LLM_MODEL", "test-model")
-    @patch("knowledge_agent.agent.OPENAI_API_KEY", "test-key")
-    @patch("knowledge_agent.agent.LLM_BASE_URL", "http://localhost:8080/v1")
+    @patch("src.agent.LLM_MODEL", "test-model")
+    @patch("src.agent.OPENAI_API_KEY", "test-key")
+    @patch("src.agent.LLM_BASE_URL", "http://localhost:8080/v1")
     def test_returns_chat_openai(self):
         llm = create_llm()
         assert llm.model_name == "test-model"
@@ -61,16 +61,16 @@ class TestCreateLLM:
 
 class TestBearerTokenForwarding:
     @pytest.mark.asyncio
-    @patch("knowledge_agent.agent.MultiServerMCPClient")
-    @patch("knowledge_agent.agent.create_llm")
-    @patch("knowledge_agent.agent.create_react_agent")
+    @patch("src.agent.MultiServerMCPClient")
+    @patch("src.agent.create_llm")
+    @patch("src.agent.create_react_agent")
     async def test_bearer_token_in_headers(self, mock_react, mock_llm, mock_client_cls):
         mock_instance = AsyncMock()
         mock_instance.get_tools = AsyncMock(return_value=[])
         mock_client_cls.return_value = mock_instance
         mock_react.return_value = MagicMock()
 
-        from knowledge_agent.agent import create_agent_with_tools
+        from src.agent import create_agent_with_tools
         await create_agent_with_tools(bearer_token="test-jwt-token")
 
         call_args = mock_client_cls.call_args[0][0]
@@ -78,16 +78,16 @@ class TestBearerTokenForwarding:
         assert headers["Authorization"] == "Bearer test-jwt-token"
 
     @pytest.mark.asyncio
-    @patch("knowledge_agent.agent.MultiServerMCPClient")
-    @patch("knowledge_agent.agent.create_llm")
-    @patch("knowledge_agent.agent.create_react_agent")
+    @patch("src.agent.MultiServerMCPClient")
+    @patch("src.agent.create_llm")
+    @patch("src.agent.create_react_agent")
     async def test_no_token_no_auth_header(self, mock_react, mock_llm, mock_client_cls):
         mock_instance = AsyncMock()
         mock_instance.get_tools = AsyncMock(return_value=[])
         mock_client_cls.return_value = mock_instance
         mock_react.return_value = MagicMock()
 
-        from knowledge_agent.agent import create_agent_with_tools
+        from src.agent import create_agent_with_tools
         await create_agent_with_tools(bearer_token=None)
 
         call_args = mock_client_cls.call_args[0][0]
