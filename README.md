@@ -2,7 +2,7 @@
 
 PostgreSQL database, MCP server, and A2A agents for the RedBank multi-agent banking demo, adapted for Kagenti deployment with Row-Level Security (RLS).
 
-Part of RHAISTRAT-1459 / RHAIENG-4555 (Epic) / RHAIENG-4556 (MCP Server) / RHAIENG-4559 (Banking Agent).
+Part of RHAISTRAT-1459 / RHAIENG-4555 (Epic) / RHAIENG-4556 (MCP Server) / RHAIENG-4558 (Knowledge Agent) / RHAIENG-4559 (Banking Agent).
 
 ## Directory Layout
 
@@ -38,8 +38,21 @@ redbank-demo-2/
 │   ├── banking-agent.yaml    Deployment + Service
 │   ├── agentruntime.yaml     AgentRuntime CR (type: agent)
 │   └── deploy.sh             OpenShift build + deploy
+├── knowledge-agent/          A2A Knowledge Agent (Agent B — read-only RAG + data)
+│   ├── knowledge_agent/
+│   │   ├── __main__.py       A2A server startup, agent card, MLflow init
+│   │   ├── agent.py          LangGraph ReAct agent + allow-list filter
+│   │   └── agent_executor.py A2A <-> LangGraph bridge with token propagation
+│   ├── tests/                Unit tests (mocked, no infra needed)
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   ├── knowledge-agent.yaml  Deployment + Service
+│   ├── agentruntime.yaml     AgentRuntime CR (type: agent)
+│   └── deploy.sh             OpenShift build + deploy
 ├── scripts/
 │   ├── setup-keycloak.sh     Provision Keycloak realm, client, users, audience mapper
+│   ├── test-knowledge-agent.sh  Manual A2A agent test with Keycloak JWTs
+│   ├── test-search-knowledge.sh Manual MCP tool test with Keycloak JWTs
 │   └── cleanup.sh            Tear down deployed workloads
 ├── tests/
 │   └── test_mcp_rls.py       MCP-level integration tests (pytest)
@@ -143,12 +156,15 @@ RLS policies then filter based on these variables:
 | `get_customer` | Look up a customer by email or phone |
 | `get_customer_transactions` | List transactions with optional date range filter |
 | `get_account_summary` | Customer info + statement count + latest balance |
+| `search_knowledge` | Semantic similarity search across role-scoped document collections |
 
 **Write tools** (admin only):
 | Tool | Description |
 |------|-------------|
 | `update_account` | Update customer phone, address, or account type |
 | `create_transaction` | Insert a new transaction on the latest statement |
+
+The `search_knowledge` tool uses `PGVectorStore` (from `langchain-postgres`) to query the `embeddings` table. It selects the admin or user store based on the caller's JWT role, so RLS scoping is enforced automatically. The embedding model (`nomic-ai/nomic-embed-text-v1.5`) is baked into the MCP server container image.
 
 ### Security Model
 
@@ -170,20 +186,27 @@ Seed data includes 5 customers (Alice, Bob, Carol, David, John), 13 statements, 
 
 Each workload is enrolled into the Kagenti platform via an `AgentRuntime` custom resource (`agent.kagenti.dev/v1alpha1`). The `AgentRuntime` references the Deployment via `targetRef` — the operator then manages `kagenti.io/type` labels, sets a `kagenti.io/config-hash` annotation for rollout coordination, and enables AuthBridge sidecar injection at Pod admission.
 
-| Workload | AgentRuntime | `spec.type` | Protocol label (Service) |
-|----------|-------------|-------------|--------------------------|
-| `redbank-mcp-server` | `redbank-mcp-server-runtime` | `tool` | `protocol.kagenti.io/mcp: "true"` |
-| `redbank-banking-agent` | `redbank-banking-agent-runtime` | `agent` | `protocol.kagenti.io/a2a: ""` |
+| Workload | AgentRuntime | `spec.type` | Protocol label |
+|----------|-------------|-------------|----------------|
+| `redbank-mcp-server` | `redbank-mcp-server-runtime` | `tool` | `protocol.kagenti.io/mcp: "true"` (Service) |
+| `redbank-banking-agent` | `redbank-banking-agent-runtime` | `agent` | `protocol.kagenti.io/a2a: ""` (Deployment + Service) |
+| `redbank-knowledge-agent` | `redbank-knowledge-agent-runtime` | `agent` | `protocol.kagenti.io/a2a: ""` (Deployment + Service) |
 
 The `kagenti.io/type` label on Deployments is managed by the operator — do not set it manually. Protocol labels on Services (`protocol.kagenti.io/a2a`, `protocol.kagenti.io/mcp`) remain in the Service manifests since they drive AgentCard sync and tool discovery independently.
 
 Verify enrollment:
 
 ```bash
-oc get agentruntime
-# NAME                              TYPE    TARGET                   PHASE   AGE
-# redbank-banking-agent-runtime     agent   redbank-banking-agent    Active  ...
-# redbank-mcp-server-runtime        tool    redbank-mcp-server       Active  ...
+oc get agentruntimes
+# NAME                                TYPE    TARGET                    PHASE   AGE
+# redbank-banking-agent-runtime       agent   redbank-banking-agent     Active  ...
+# redbank-knowledge-agent-runtime     agent   redbank-knowledge-agent   Active  ...
+# redbank-mcp-server-runtime          tool    redbank-mcp-server        Active  ...
+
+oc get agentcards
+# NAME                                      PROTOCOL   KIND         TARGET                    AGENT                     SYNCED
+# redbank-banking-agent-deployment-card      a2a        Deployment   redbank-banking-agent     RedBank Banking...        True
+# redbank-knowledge-agent-deployment-card    a2a        Deployment   redbank-knowledge-agent   RedBank Knowledge...      True
 ```
 
 ### Banking Operations Agent (Agent C)
@@ -213,6 +236,31 @@ The Banking Operations Agent is an A2A service built with LangGraph that provide
 3. Agent extracts the Bearer token from the incoming request
 4. Agent passes the token as a header to `MultiServerMCPClient`
 5. MCP server applies RLS based on the JWT claims (Tier 2)
+
+### Knowledge Agent (Agent B)
+
+The Knowledge Agent is a read-only A2A service built with LangGraph that provides semantic document search (RAG) and customer data retrieval. It routes queries between the `search_knowledge` tool for policy/FAQ questions and the customer data tools for account lookups.
+
+**Architecture:**
+- **Protocol**: A2A — exposes `/.well-known/agent-card.json` on port 8002
+- **Agent framework**: LangGraph `create_react_agent` with routing guidance in the system prompt
+- **MCP client**: `MultiServerMCPClient` connected to the PostgreSQL MCP server over HTTP
+- **Tool allow-list**: Only `get_customer`, `get_customer_transactions`, `get_account_summary`, and `search_knowledge` — write tools are filtered out so they cannot be invoked even if the LLM attempts to call them
+- **LLM**: Configurable via `LLM_BASE_URL` and `LLM_MODEL`
+- **Observability**: MLflow LangChain autolog
+
+**Query routing** (guided by system prompt):
+- "how do I...", "what is the policy on..." → `search_knowledge`
+- "look up customer...", "what is my balance..." → customer data tools
+- May combine both in a single turn
+
+**RLS scoping:**
+- Knowledge search: admin sees docs from all collections; user sees only `user` collection
+- Customer data: admin sees all records; user sees only their own (same as Banking Agent)
+
+**Kagenti enrollment:**
+- **AgentRuntime**: `redbank-knowledge-agent-runtime` (type: `agent`)
+- **Deployment + Service**: `protocol.kagenti.io/a2a: ""` label for AgentCard discovery
 
 ### Orchestrator Integration (RHAIENG-4560)
 
@@ -313,12 +361,14 @@ All operations are driven through the Makefile. The default namespace is `redban
 
 | Target | Description |
 |--------|-------------|
-| `deploy-all` | Deploy everything (Postgres + MCP server + Banking Agent) |
+| `deploy-all` | Deploy everything (Postgres + MCP server + Banking Agent + Knowledge Agent) |
 | `deploy-db` | Create namespace and apply Kustomize (Secret + ConfigMap + Deployment + Service) |
 | `deploy-mcp` | Build MCP server image via `oc new-build` and deploy |
 | `deploy-agent-c` | Build Banking Operations Agent image and deploy |
+| `deploy-knowledge-agent` | Build Knowledge Agent image and deploy |
 | `setup-keycloak` | Provision Keycloak realm, client, audience mapper, roles, and demo users |
 | `test-pgvector` | Run pgvector schema + RLS tests (requires Podman) |
+| `test-knowledge-agent` | Run manual A2A tests against the Knowledge Agent with Keycloak JWTs |
 | `compile-pipeline` | Compile the KFP pipeline to YAML |
 | `clean` | Tear down deployed workloads (deployments, services, secrets, configmaps, PVC) |
 
@@ -333,11 +383,27 @@ make deploy-db deploy-mcp
 # 2. Configure Keycloak (creates realm, client, users, audience mapper)
 KEYCLOAK_ADMIN=<admin-user> KEYCLOAK_PASSWORD=<admin-password> make setup-keycloak
 
-# 3. Deploy the Banking Operations Agent (requires LLM config)
-LLM_BASE_URL=<vllm-endpoint>/v1 LLM_MODEL=<model-name> make deploy-agent-c
+# 3. Grant schema CREATE to 'app' role (required for PGVector metadata tables)
+oc exec deployment/postgresql -- psql -U user -d db -c "GRANT CREATE ON SCHEMA public TO app;"
 
-# 4. Verify
+# 4. Deploy agents (requires LLM config)
+LLM_BASE_URL=<vllm-endpoint>/v1 LLM_MODEL=<model-name> make deploy-agent-c
+LLM_BASE_URL=<vllm-endpoint>/v1 LLM_MODEL=<model-name> make deploy-knowledge-agent
+
+# 5. Ingest documents into PGVector (compile + run KFP pipeline)
+make compile-pipeline
+# Upload and run pgvector_rag_pipeline.yaml in OpenShift AI
+
+# 6. Verify
 oc get pods
+oc get agentruntimes
+oc get agentcards
+```
+
+Or deploy everything at once:
+
+```bash
+LLM_BASE_URL=<vllm-endpoint>/v1 LLM_MODEL=<model-name> make deploy-all
 ```
 
 ### Keycloak Setup Details
@@ -460,7 +526,7 @@ curl -s http://localhost:8000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Expected: 5 tools (`get_customer`, `get_customer_transactions`, `get_account_summary`, `update_account`, `create_transaction`).
+Expected: 6 tools (`get_customer`, `get_customer_transactions`, `get_account_summary`, `search_knowledge`, `update_account`, `create_transaction`).
 
 ### Step 5 — Get Keycloak tokens
 
@@ -552,7 +618,81 @@ curl -s http://localhost:8000/mcp \
 
 Expected: updated customer record with `phone: "555-9999"`.
 
-### Step 10 — Verify Kagenti enrollment
+### Step 10 — Test the Knowledge Agent (A2A)
+
+The Knowledge Agent test script sends A2A requests with Keycloak JWTs and verifies RAG search, customer data access, RLS scoping, and write tool blocking.
+
+**Automated (with port-forward):**
+
+```bash
+make test-knowledge-agent
+```
+
+This port-forwards the agent, runs 6 tests, and cleans up. The tests verify:
+
+1. **Jane (admin) — knowledge search**: returns docs from all collections
+2. **John (user) — knowledge search**: returns docs from `user` collection only
+3. **Jane (admin) — customer data**: can see any customer's account
+4. **John (user) — own data**: sees his own balance
+5. **John (user) — other customers**: blocked by RLS ("No data was found")
+6. **John (user) — write tools**: blocked by allow-list ("I don't have permission")
+
+**Manual (port-forward yourself):**
+
+```bash
+oc port-forward svc/redbank-knowledge-agent 8002:8002
+bash scripts/test-knowledge-agent.sh
+```
+
+**Manual curl commands:**
+
+```bash
+# Get Keycloak tokens
+KEYCLOAK_URL="https://$(oc get route keycloak -n keycloak -o jsonpath='{.spec.host}')"
+JANE_TOKEN=$(curl -sk "${KEYCLOAK_URL}/realms/redbank/protocol/openid-connect/token" -d "grant_type=password" -d "client_id=redbank-mcp" -d "username=jane" -d "password=jane123" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+JOHN_TOKEN=$(curl -sk "${KEYCLOAK_URL}/realms/redbank/protocol/openid-connect/token" -d "grant_type=password" -d "client_id=redbank-mcp" -d "username=john" -d "password=john123" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Port-forward the knowledge agent (if not already running)
+oc port-forward svc/redbank-knowledge-agent 8002:8002 &
+
+# Admin-only doc: Jane (admin) sees compliance procedures
+curl -s http://localhost:8002 -H "Content-Type: application/json" -H "Authorization: Bearer ${JANE_TOKEN}" -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"What is the compliance procedure for suspicious transactions?"}],"messageId":"1"}}}' | python3 -m json.tool
+# Expected: detailed answer with CTR filing, OFAC screening, complaint handling from admin docs
+# Example response:
+#   "The compliance procedure for suspicious transactions includes:
+#    1. Filing a Currency Transaction Report (CTR) for any cash transaction exceeding $10,000...
+#    2. Collecting customer information, including name, SSN/TIN, address...
+#    3. OFAC Screening for all new customers, wire transfer beneficiaries..."
+
+# Admin-only doc: John (user) cannot see compliance procedures (RLS blocks admin collection)
+curl -s http://localhost:8002 -H "Content-Type: application/json" -H "Authorization: Bearer ${JOHN_TOKEN}" -d '{"jsonrpc":"2.0","id":"2","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"What is the compliance procedure for suspicious transactions?"}],"messageId":"2"}}}' | python3 -m json.tool
+# Expected: no results — admin docs are invisible to user role
+# Example response:
+#   "No information was found related to the compliance procedure for suspicious transactions."
+
+# User doc: Jane (admin) sees password/security info
+curl -s http://localhost:8002 -H "Content-Type: application/json" -H "Authorization: Bearer ${JANE_TOKEN}" -d '{"jsonrpc":"2.0","id":"3","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"How do I change my password and what are the security requirements?"}],"messageId":"3"}}}' | python3 -m json.tool
+# Expected response (admin sees user collection docs):
+#   "To change your password, log in to banking.redbank.com or open the RedBank mobile app,
+#    go to Settings > Security > Change Password, and follow the prompts. Your new password
+#    must be at least 12 characters long, include at least one uppercase letter, one lowercase
+#    letter, one number, and one special character (!@#$%^&*), and cannot reuse any of your
+#    last 10 passwords. Your password expires every 90 days and you will be prompted to
+#    change it."
+
+# User doc: John (user) also sees password/security info (user collection is visible to all)
+curl -s http://localhost:8002 -H "Content-Type: application/json" -H "Authorization: Bearer ${JOHN_TOKEN}" -d '{"jsonrpc":"2.0","id":"4","method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"How do I change my password and what are the security requirements?"}],"messageId":"4"}}}' | python3 -m json.tool
+# Expected response (user sees the same password/security info):
+#   "To change your password, log in to banking.redbank.com or open the RedBank mobile app,
+#    go to Settings > Security > Change Password, and follow the prompts. Your new password
+#    must be at least 12 characters long, include at least one uppercase letter, one lowercase
+#    letter, one number, and one special character (!@#$%^&*), and cannot reuse any of your
+#    last 10 passwords. Your password expires every 90 days and you will be prompted to
+#    change it. It is recommended to use a password manager to generate and store strong,
+#    unique passwords."
+```
+
+### Step 11 — Verify Kagenti enrollment
 
 ```bash
 oc get agentruntime
@@ -616,6 +756,9 @@ By default, tests fetch real access tokens from Keycloak. Set `USE_FAKE_JWT=true
 | `ADMIN_ROLE_CLAIM` | `admin` | Role name that grants admin access |
 | `DEFAULT_ROLE` | `admin` | Fallback role when no Bearer token present |
 | `DEFAULT_EMAIL` | `jane@redbank.demo` | Fallback email when no Bearer token present |
+| `PGVECTOR_USER` | `app` | Database user for PGVector connections (non-superuser, RLS enforced) |
+| `PGVECTOR_PASSWORD` | `app` | Password for PGVector database user |
+| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | HuggingFace embedding model for `search_knowledge` |
 
 ### Banking Agent
 
@@ -629,6 +772,19 @@ By default, tests fetch real access tokens from Keycloak. Set `USE_FAKE_JWT=true
 | `OPENAI_API_KEY` | (required) | API key for the LLM endpoint (vLLM or OpenAI). Stored in `llm-credentials` secret. |
 | `MLFLOW_TRACKING_URI` | (optional) | MLflow tracking endpoint from OpenShift AI |
 | `AGENT_URL` | `http://redbank-banking-agent:8001` | Agent's own URL (used in agent card) |
+
+### Knowledge Agent
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `0.0.0.0` | Bind address |
+| `PORT` | `8002` | Bind port |
+| `MCP_SERVER_URL` | `http://redbank-mcp-server:8000/mcp` | MCP server endpoint (in-cluster service) |
+| `LLM_BASE_URL` | (required) | vLLM or OpenAI API base URL |
+| `LLM_MODEL` | (required) | Model name |
+| `OPENAI_API_KEY` | (required) | API key for the LLM endpoint. Stored in `llm-credentials` secret. |
+| `MLFLOW_TRACKING_URI` | (optional) | MLflow tracking endpoint from OpenShift AI |
+| `AGENT_URL` | `http://redbank-knowledge-agent:8002` | Agent's own URL (used in agent card) |
 
 ### Production Configuration
 

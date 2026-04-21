@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from typing import Any, Optional, Union
+from urllib.parse import quote
 
 import jwt
 from jwt import PyJWKClient
@@ -141,6 +142,65 @@ def _extract_auth() -> AuthContext:
 
     logger.info("Auth: email=%s role=%s (verify=%s)", email, role, JWT_VERIFY)
     return AuthContext(email=email, role=role)
+
+
+# ---------------------------------------------------------------------------
+# PGVector knowledge base (dual-store: admin + user)
+# ---------------------------------------------------------------------------
+#
+# Pre-create two PGVectorStore instances that connect as the non-superuser
+# ``app`` role, each with a different ``app.current_role`` session variable
+# so that PostgreSQL RLS automatically scopes collection visibility.
+# ---------------------------------------------------------------------------
+
+_admin_store = None
+_user_store = None
+_kb_error: str | None = None
+
+try:
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_postgres import PGEngine, PGVectorStore
+
+    _EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+    _embeddings = HuggingFaceEmbeddings(
+        model_name=_EMBEDDING_MODEL,
+        model_kwargs={"trust_remote_code": True},
+    )
+
+    _PGVECTOR_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    _PGVECTOR_PORT = os.getenv("POSTGRES_PORT", "5432")
+    _PGVECTOR_DB = os.getenv("POSTGRES_DATABASE", "db")
+    _PGVECTOR_USER = os.getenv("PGVECTOR_USER", "app")
+    _PGVECTOR_PASSWORD = os.getenv("PGVECTOR_PASSWORD", "app")
+
+    def _pgvector_conn_string(role: str) -> str:
+        opts = quote(f"-c app.current_role={role}")
+        return (
+            f"postgresql+psycopg://{_PGVECTOR_USER}:{_PGVECTOR_PASSWORD}"
+            f"@{_PGVECTOR_HOST}:{_PGVECTOR_PORT}/{_PGVECTOR_DB}"
+            f"?options={opts}"
+        )
+
+    _admin_engine = PGEngine.from_connection_string(url=_pgvector_conn_string("admin"))
+    _user_engine = PGEngine.from_connection_string(url=_pgvector_conn_string("user"))
+
+    _admin_store = PGVectorStore.create_sync(
+        engine=_admin_engine,
+        table_name="embeddings",
+        embedding_service=_embeddings,
+        metadata_columns=["collection"],
+    )
+    _user_store = PGVectorStore.create_sync(
+        engine=_user_engine,
+        table_name="embeddings",
+        embedding_service=_embeddings,
+        metadata_columns=["collection"],
+    )
+    logger.info("PGVector knowledge base initialized (model=%s)", _EMBEDDING_MODEL)
+
+except Exception as e:
+    _kb_error = str(e)
+    logger.warning("PGVector knowledge base unavailable: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +415,48 @@ def get_account_summary(
     )
     result = cur.fetchone()
     return dict(result) if result else {}
+
+
+@mcp.tool()
+@authenticated
+def search_knowledge(
+    query: str,
+    k: int = 5,
+    *,
+    auth: AuthContext,
+    conn: psycopg.Connection,
+) -> list[dict[str, Any]]:
+    """Search the RedBank knowledge base for documents matching a query.
+
+    Uses semantic similarity search across role-scoped document collections.
+    Admins see documents from all collections; users see only user-facing documents.
+
+    Args:
+        query: Natural language search query
+        k: Number of results to return (default 5)
+
+    Returns:
+        List of matching documents with content, collection, and metadata
+    """
+    if _admin_store is None or _user_store is None:
+        raise RuntimeError(
+            f"Knowledge base is not available: {_kb_error or 'initialization failed'}"
+        )
+
+    store = _admin_store if auth.role == "admin" else _user_store
+    logger.info("search_knowledge: query=%r k=%d role=%s", query[:80], k, auth.role)
+
+    docs = store.similarity_search(query, k=k)
+    return [
+        {
+            "content": doc.page_content,
+            "collection": doc.metadata.get("collection", ""),
+            "metadata": {
+                mk: mv for mk, mv in doc.metadata.items() if mk != "collection"
+            },
+        }
+        for doc in docs
+    ]
 
 
 # ===================================================================
