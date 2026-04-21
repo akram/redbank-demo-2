@@ -167,6 +167,9 @@ GRANT ALL PRIVILEGES ON SEQUENCE customers_customer_id_seq TO app;
 GRANT ALL PRIVILEGES ON SEQUENCE statements_statement_id_seq TO app;
 GRANT ALL PRIVILEGES ON SEQUENCE transactions_transaction_id_seq TO app;
 
+-- PGVector (langchain-postgres) creates internal metadata tables on init.
+GRANT CREATE ON SCHEMA public TO app;
+
 -- =============================================================================
 -- Row-Level Security
 -- =============================================================================

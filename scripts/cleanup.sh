@@ -15,7 +15,12 @@ oc project "${NAMESPACE}"
 
 _out "Deleting AgentRuntime CRs"
 oc delete agentruntime redbank-banking-agent-runtime --ignore-not-found
+oc delete agentruntime redbank-knowledge-agent-runtime --ignore-not-found
 oc delete agentruntime redbank-mcp-server-runtime --ignore-not-found
+
+_out "Deleting Knowledge Agent deployment and service"
+oc delete deployment redbank-knowledge-agent --ignore-not-found
+oc delete service redbank-knowledge-agent --ignore-not-found
 
 _out "Deleting Banking Agent deployment and service"
 oc delete deployment redbank-banking-agent --ignore-not-found

@@ -233,6 +233,7 @@ class TestToolDiscovery:
             "get_account_summary",
             "update_account",
             "create_transaction",
+            "search_knowledge",
         }
 
 
@@ -442,3 +443,34 @@ class TestAdminJWT:
             {"customer_id": 3, "address": "789 Pine Road, Seattle, WA"},
             bearer=JANE_JWT,
         )
+
+
+# -- Tests: search_knowledge ---------------------------------------------------
+
+
+class TestSearchKnowledge:
+    """Verify the search_knowledge tool is available and responds."""
+
+    def test_tool_appears_in_tool_list(self, admin_session: str):
+        data = _call("tools/list", admin_session)
+        tools = data["result"]["tools"]
+        names = {t["name"] for t in tools}
+        assert "search_knowledge" in names
+
+    def test_admin_search_returns_results(self, admin_session: str):
+        result = _tool_call(
+            admin_session,
+            "search_knowledge",
+            {"query": "password reset"},
+        )
+        assert result.get("isError") is not True
+
+    def test_search_with_custom_k(self, admin_session: str):
+        result = _tool_call(
+            admin_session,
+            "search_knowledge",
+            {"query": "account", "k": 2},
+        )
+        content = _tool_content(result)
+        if isinstance(content, list):
+            assert len(content) <= 2

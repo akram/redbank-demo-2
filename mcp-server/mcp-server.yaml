@@ -63,6 +63,12 @@ spec:
           value: "user"
         - name: DEFAULT_EMAIL
           value: "jane@redbank.demo"
+        # PGVector knowledge base — connects as the non-superuser 'app' role
+        # so that RLS policies on the embeddings table are enforced.
+        - name: PGVECTOR_USER
+          value: "app"
+        - name: PGVECTOR_PASSWORD
+          value: "app"
 ---
 apiVersion: v1
 kind: Service
