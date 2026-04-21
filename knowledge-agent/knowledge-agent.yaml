@@ -42,6 +42,8 @@ spec:
               key: OPENAI_API_KEY
         - name: MLFLOW_TRACKING_URI
           value: "${MLFLOW_TRACKING_URI}"
+        - name: MLFLOW_TRACKING_INSECURE_TLS
+          value: "true"
 ---
 apiVersion: v1
 kind: Service
