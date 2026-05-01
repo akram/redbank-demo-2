@@ -1,0 +1,22 @@
+# Keycloak CR snippet: Enable FGAP v1 for Token Exchange
+#
+# Apply with: oc edit keycloak keycloak -n keycloak
+# Or: oc patch keycloak keycloak -n keycloak --type=merge --patch-file keycloak-cr-fgap-v1.yaml
+#
+# This enables Fine-Grained Authorization Permissions v1 which is required for
+# OAuth 2.0 Token Exchange to work properly. Token Exchange V2 has an incomplete
+# implementation that throws UnsupportedOperationException.
+#
+# After applying, Keycloak pod will restart automatically.
+
+apiVersion: k8s.keycloak.org/v2alpha1
+kind: Keycloak
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  features:
+    enabled:
+      - token-exchange           # Enable OAuth 2.0 Token Exchange (RFC 8693)
+      - admin-fine-grained-authz # Enable FGAP v1 (required for token exchange permissions)
+  # ... rest of spec remains unchanged
