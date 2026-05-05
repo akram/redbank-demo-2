@@ -12,10 +12,10 @@ decode_jwt() {
 
 # Get a user token via password grant.
 get_user_token() {
-  local username="$1" password="$2" client_id="${3:-redbank-mcp}"
+  local username="$1" password="$2" client_id="${3:-$KEYCLOAK_CLIENT_ID}"
   local secret_arg=""
-  if [ -n "$REDBANK_MCP_SECRET" ] && [ "$client_id" = "redbank-mcp" ]; then
-    secret_arg="-d client_secret=$REDBANK_MCP_SECRET"
+  if [ -n "$PLAYGROUND_CLIENT_SECRET" ] && [ "$client_id" = "$KEYCLOAK_CLIENT_ID" ]; then
+    secret_arg="-d client_secret=$PLAYGROUND_CLIENT_SECRET"
   fi
   curl -sk -X POST "$KEYCLOAK_URL/realms/$REALM/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
@@ -194,14 +194,15 @@ if [ -z "$ADMIN_TOKEN" ]; then
   echo "WARNING: Could not get admin token"
 fi
 
-# --- Get redbank-mcp client secret -------------------------------------------
+# --- Get playground client secret ---------------------------------------------
 
-REDBANK_MCP_SECRET=""
+KEYCLOAK_CLIENT_ID="${KEYCLOAK_CLIENT_ID:-$NAMESPACE}"
+PLAYGROUND_CLIENT_SECRET=""
 if [ -n "$ADMIN_TOKEN" ]; then
-  CLIENT_UUID=$(curl -sk "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=redbank-mcp" \
+  PLAYGROUND_UUID=$(curl -sk "$KEYCLOAK_URL/admin/realms/$REALM/clients?clientId=$KEYCLOAK_CLIENT_ID" \
     -H "Authorization: Bearer $ADMIN_TOKEN" | jq -r '.[0].id // empty')
-  if [ -n "$CLIENT_UUID" ]; then
-    REDBANK_MCP_SECRET=$(curl -sk "$KEYCLOAK_URL/admin/realms/$REALM/clients/$CLIENT_UUID/client-secret" \
+  if [ -n "$PLAYGROUND_UUID" ]; then
+    PLAYGROUND_CLIENT_SECRET=$(curl -sk "$KEYCLOAK_URL/admin/realms/$REALM/clients/$PLAYGROUND_UUID/client-secret" \
       -H "Authorization: Bearer $ADMIN_TOKEN" | jq -r '.value // empty')
   fi
 fi
@@ -293,9 +294,9 @@ else
 
   if [ "$SPIFFE_MODE" = "true" ]; then
     echo "SPIFFE mode — running exchange from inside knowledge-agent pod"
-    do_spiffe_token_exchange "john -> knowledge-agent" "redbank-knowledge-agent" "knowledge-agent" "redbank-mcp" "$JOHN_TOKEN" || FAILURES=$((FAILURES + 1))
+    do_spiffe_token_exchange "john -> knowledge-agent (target: mcp-server)" "redbank-knowledge-agent" "knowledge-agent" "$MCP_CLIENT_ID" "$JOHN_TOKEN" || FAILURES=$((FAILURES + 1))
   else
-    do_token_exchange "john -> knowledge-agent" "$JOHN_TOKEN" "$KNOWLEDGE_AGENT_CLIENT_ID" "$KNOWLEDGE_AGENT_CLIENT_SECRET" "redbank-mcp" || FAILURES=$((FAILURES + 1))
+    do_token_exchange "john -> knowledge-agent (target: mcp-server)" "$JOHN_TOKEN" "$KNOWLEDGE_AGENT_CLIENT_ID" "$KNOWLEDGE_AGENT_CLIENT_SECRET" "$MCP_CLIENT_ID" || FAILURES=$((FAILURES + 1))
   fi
 fi
 
@@ -318,9 +319,9 @@ else
 
   if [ "$SPIFFE_MODE" = "true" ]; then
     echo "SPIFFE mode — running exchange from inside knowledge-agent pod"
-    do_spiffe_token_exchange "jane -> knowledge-agent" "redbank-knowledge-agent" "knowledge-agent" "redbank-mcp" "$JANE_TOKEN" || FAILURES=$((FAILURES + 1))
+    do_spiffe_token_exchange "jane -> knowledge-agent (target: mcp-server)" "redbank-knowledge-agent" "knowledge-agent" "$MCP_CLIENT_ID" "$JANE_TOKEN" || FAILURES=$((FAILURES + 1))
   else
-    do_token_exchange "jane -> knowledge-agent" "$JANE_TOKEN" "$KNOWLEDGE_AGENT_CLIENT_ID" "$KNOWLEDGE_AGENT_CLIENT_SECRET" "redbank-mcp" || FAILURES=$((FAILURES + 1))
+    do_token_exchange "jane -> knowledge-agent (target: mcp-server)" "$JANE_TOKEN" "$KNOWLEDGE_AGENT_CLIENT_ID" "$KNOWLEDGE_AGENT_CLIENT_SECRET" "$MCP_CLIENT_ID" || FAILURES=$((FAILURES + 1))
   fi
 fi
 

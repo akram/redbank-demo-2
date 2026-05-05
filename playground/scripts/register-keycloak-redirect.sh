@@ -22,7 +22,7 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-redbank-demo}"
 REALM="${KEYCLOAK_REALM:-$NAMESPACE}"
-CLIENT="${KEYCLOAK_CLIENT_ID:-redbank-mcp}"
+CLIENT="${KEYCLOAK_CLIENT_ID:-$NAMESPACE}"
 
 function _out() {
   echo "$(date +'%F %H:%M:%S') $*"

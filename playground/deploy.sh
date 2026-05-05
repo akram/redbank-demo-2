@@ -48,7 +48,7 @@ function setup() {
       [[ -n "$_kc_host" ]] && KEYCLOAK_URL="https://${_kc_host}"
     fi
     [[ -z "${KEYCLOAK_REALM:-}" ]] && KEYCLOAK_REALM="${ns}"
-    [[ -z "${KEYCLOAK_CLIENT_ID:-}" ]] && KEYCLOAK_CLIENT_ID="redbank-mcp"
+    [[ -z "${KEYCLOAK_CLIENT_ID:-}" ]] && KEYCLOAK_CLIENT_ID="${ns}"
 
     [[ -n "${KEYCLOAK_URL:-}" ]] && helm_sets+=(--set env.KEYCLOAK_URL="${KEYCLOAK_URL}")
     [[ -n "${KEYCLOAK_REALM:-}" ]] && helm_sets+=(--set env.KEYCLOAK_REALM="${KEYCLOAK_REALM}")

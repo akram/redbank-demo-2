@@ -61,8 +61,8 @@ fi
 
 _out "Discovering clients in realm $REALM"
 
-# Get all kagenti-registered clients (namespace/workload pattern) + redbank-mcp
-KEYCLOAK_CLIENT_ID="${KEYCLOAK_CLIENT_ID:-redbank-mcp}"
+# Get all kagenti-registered clients (namespace/workload pattern) + playground client
+KEYCLOAK_CLIENT_ID="${KEYCLOAK_CLIENT_ID:-$NAMESPACE}"
 ALL_CLIENTS=$(kc GET "/$REALM/clients?max=100" | jq "[.[] | select(.clientId | startswith(\"${NAMESPACE}/\") or contains(\"/ns/${NAMESPACE}/sa/\") or . == \"${KEYCLOAK_CLIENT_ID}\")]")
 CLIENT_COUNT=$(echo "$ALL_CLIENTS" | jq length)
 _out "  Found $CLIENT_COUNT clients"
@@ -78,7 +78,7 @@ ALL_UUIDS_JSON=$(echo "$ALL_CLIENTS" | jq '[.[].id]')
 # Get realm-management client UUID (holds FGAP policies)
 REALM_MGMT_UUID=$(kc GET "/$REALM/clients?clientId=realm-management" | jq -r '.[0].id')
 
-# --- Ensure redbank-mcp is confidential (required for FGAP) -----------------
+# --- Ensure ${KEYCLOAK_CLIENT_ID} is confidential (required for FGAP) --------
 
 REDBANK_MCP_UUID=$(echo "$ALL_CLIENTS" | jq -r ".[] | select(.clientId == \"${KEYCLOAK_CLIENT_ID}\") | .id")
 if [ -n "$REDBANK_MCP_UUID" ]; then
@@ -191,6 +191,40 @@ else
   _out "  No agent-*-aud scopes found (operator may not have created them yet)"
 fi
 
+# --- Fix audience scope mappers for SPIFFE clients ----------------------------
+# The operator creates audience scopes with short-form client IDs (namespace/name),
+# but SPIFFE clients are registered with full SPIFFE URIs. Fix the mismatch so that
+# tokens include the actual client ID in the aud claim.
+
+TOKEN=$(get_token)
+HAS_SPIFFE_CLIENTS=$(echo "$ALL_CLIENTS" | jq '[.[] | select(.clientId | startswith("spiffe://"))] | length')
+if [ "$HAS_SPIFFE_CLIENTS" -gt 0 ] && [ -n "$AGENT_SCOPES" ]; then
+  _out "Fixing audience scope mappers for SPIFFE clients"
+  echo "$AGENT_SCOPES" | while read SID SNAME; do
+    TOKEN=$(get_token)
+    MAPPER=$(kc GET "/$REALM/client-scopes/$SID/protocol-mappers/models" | jq '.[0]')
+    MAPPER_ID=$(echo "$MAPPER" | jq -r '.id // empty')
+    CURRENT_AUD=$(echo "$MAPPER" | jq -r '.config["included.custom.audience"] // empty')
+
+    # Skip if already a SPIFFE URI or no mapper
+    if [ -z "$MAPPER_ID" ] || [ -z "$CURRENT_AUD" ] || echo "$CURRENT_AUD" | grep -q "^spiffe://"; then
+      continue
+    fi
+
+    # Extract workload name from short-form (namespace/workload -> workload)
+    WORKLOAD="${CURRENT_AUD##*/}"
+    SPIFFE_ID=$(echo "$ALL_CLIENTS" | jq -r ".[] | select(.clientId | endswith(\"/sa/$WORKLOAD\")) | .clientId")
+
+    if [ -n "$SPIFFE_ID" ]; then
+      UPDATED=$(echo "$MAPPER" | jq --arg aud "$SPIFFE_ID" '.config["included.custom.audience"] = $aud')
+      TOKEN=$(get_token)
+      kc PUT "/$REALM/client-scopes/$SID/protocol-mappers/models/$MAPPER_ID" \
+        -d "$UPDATED" > /dev/null 2>&1
+      _out "  Fixed $SNAME: $CURRENT_AUD -> $SPIFFE_ID"
+    fi
+  done
+fi
+
 # --- Update playground with client secret (confidential client) ---------------
 
 if [ -n "$REDBANK_MCP_UUID" ]; then
@@ -198,7 +232,7 @@ if [ -n "$REDBANK_MCP_UUID" ]; then
   MCP_SECRET=$(kc GET "/$REALM/clients/$REDBANK_MCP_UUID/client-secret" | jq -r '.value // empty')
   if [ -n "$MCP_SECRET" ]; then
     _out "Storing ${KEYCLOAK_CLIENT_ID} client secret for playground"
-    oc create secret generic redbank-mcp-credentials \
+    oc create secret generic keycloak-client-credentials \
       --from-literal=client-secret="$MCP_SECRET" \
       -n "${NAMESPACE}" --dry-run=client -o yaml | oc apply -f -
 
@@ -208,7 +242,7 @@ if [ -n "$REDBANK_MCP_UUID" ]; then
         -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="KEYCLOAK_CLIENT_SECRET")].name}' 2>/dev/null)
       if [ -z "$HAS_SECRET" ]; then
         oc patch deployment redbank-playground -n "${NAMESPACE}" --type=json \
-          -p='[{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"KEYCLOAK_CLIENT_SECRET","valueFrom":{"secretKeyRef":{"name":"redbank-mcp-credentials","key":"client-secret"}}}}]'
+          -p='[{"op":"add","path":"/spec/template/spec/containers/0/env/-","value":{"name":"KEYCLOAK_CLIENT_SECRET","valueFrom":{"secretKeyRef":{"name":"keycloak-client-credentials","key":"client-secret"}}}}]'
         _out "  Patched playground with client secret"
       else
         _out "  Playground already has client secret"
@@ -221,6 +255,15 @@ fi
 
 _out ""
 _out "Updating authproxy-routes to enable token exchange for redbank-mcp-server"
+
+# Look up the MCP server's actual Keycloak client ID (may be a SPIFFE URI)
+TOKEN=$(get_token)
+MCP_TARGET_AUD=$(echo "$ALL_CLIENTS" | jq -r '[.[] | select(.clientId | contains("mcp-server"))][0].clientId // empty')
+if [ -z "$MCP_TARGET_AUD" ]; then
+  MCP_TARGET_AUD="${KEYCLOAK_CLIENT_ID}"
+  _out "  WARNING: MCP server client not found, falling back to ${KEYCLOAK_CLIENT_ID}"
+fi
+
 cat <<EOF | oc apply -n "${NAMESPACE}" -f -
 apiVersion: v1
 kind: ConfigMap
@@ -229,7 +272,7 @@ metadata:
 data:
   routes.yaml: |
     - host: "redbank-mcp-server"
-      target_audience: "redbank-mcp"
+      target_audience: "${MCP_TARGET_AUD}"
       token_scopes: "openid"
 EOF
 
@@ -242,4 +285,4 @@ _out ""
 _out "Token exchange configured!"
 _out "  Realm:   $REALM"
 _out "  Clients: $CLIENT_COUNT"
-_out "  Route:   redbank-mcp-server -> audience redbank-mcp"
+_out "  Route:   redbank-mcp-server -> audience ${MCP_TARGET_AUD}"

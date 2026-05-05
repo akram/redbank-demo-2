@@ -38,7 +38,7 @@ if [[ -z "${KEYCLOAK_ADMIN}" ]] || [[ -z "${KEYCLOAK_PASSWORD}" ]]; then
 fi
 
 REALM="${KEYCLOAK_REALM:-$NAMESPACE}"
-CLIENT_ID="${KEYCLOAK_CLIENT_ID:-redbank-mcp}"
+CLIENT_ID="${KEYCLOAK_CLIENT_ID:-$NAMESPACE}"
 
 function _out() {
   echo "$(date +'%F %H:%M:%S') $@"
@@ -103,16 +103,16 @@ CLIENT_UUID=$(kc_api GET "/${REALM}/clients?clientId=${CLIENT_ID}" | jq -r '.[0]
 
 if [[ -n "$CLIENT_UUID" && "$CLIENT_UUID" != "null" ]]; then
   kc_api POST "/${REALM}/clients/${CLIENT_UUID}/protocol-mappers/models" -d "{
-    \"name\": \"redbank-mcp-audience\",
+    \"name\": \"${CLIENT_ID}-audience\",
     \"protocol\": \"openid-connect\",
     \"protocolMapper\": \"oidc-audience-mapper\",
     \"config\": {
-      \"included.custom.audience\": \"redbank-mcp\",
+      \"included.custom.audience\": \"${CLIENT_ID}\",
       \"id.token.claim\": \"false\",
       \"access.token.claim\": \"true\"
     }
   }" 2>/dev/null || _out "Audience mapper already exists"
-  _out "Audience mapper configured (aud will include 'redbank-mcp')"
+  _out "Audience mapper configured (aud will include '${CLIENT_ID}')"
 else
   echo "WARNING: Could not find client UUID for '${CLIENT_ID}'" >&2
 fi
